@@ -4,6 +4,14 @@
 
 Built upon [ViMax](https://github.com/HKUDS/ViMax) and [vimax-agnes](https://github.com/easyeye163/vimax-agnes), this project upgrades the command-line AI video generation tool into an all-in-one video generator with a Web UI.
 
+## 🎥 Demo
+
+> A dark-twist fairytale — *The Frog Prince*, 5 scenes, keyframes chaining, fully auto-generated.
+
+[![The Frog Prince — Demo Video](https://img.shields.io/badge/▶%20Watch%20Demo-FF0050?style=for-the-badge&logo=tiktok&logoColor=white)](https://v.douyin.com/L4F6KdGnD6U/)
+
+<sub>Click to watch on Douyin. More examples: [Girl Dunk](https://v.douyin.com/L4F6KdGnD6U/) · [Beach Dance](https://v.douyin.com/L4F6KdGnD6U/)</sub>
+
 ## ✨ Features
 
 - **🌐 Web UI** — One-click launch, operate entirely in the browser, no command line needed

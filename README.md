@@ -4,6 +4,14 @@
 
 本项目基于 [ViMax](https://github.com/HKUDS/ViMax) 和 [vimax-agnes](https://github.com/easyeye163/vimax-agnes) 改造而来，将命令行 AI 视频生成工具升级为带 Web UI 的一站式视频生成器。
 
+## 🎥 Demo
+
+> 暗黑童话 —《青蛙王子》，5 个场景，keyframes 串联，全自动生成。
+
+[![青蛙王子 — 演示视频](https://img.shields.io/badge/▶%20观看演示-FF0050?style=for-the-badge&logo=tiktok&logoColor=white)](https://v.douyin.com/L4F6KdGnD6U/)
+
+<sub>点击在抖音观看。更多示例：[女生扣篮](https://v.douyin.com/L4F6KdGnD6U/) · [沙滩热舞](https://v.douyin.com/L4F6KdGnD6U/)</sub>
+
 ## ✨ 特性
 
 - **🌐 Web UI** — 一键启动后在浏览器中完成所有操作，无需命令行
