@@ -110,6 +110,7 @@ class VideoGeneratorAgnesAPI:
                         "image": b64_data,
                     },
                 }
+                logger.info(f"[Agnes Video] Uploading image to hosted URL (attempt {attempt+1}/{retries})...")
                 resp = await asyncio.to_thread(
                     requests.post,
                     f"{BASE_URL}/images/generations",
@@ -158,6 +159,8 @@ class VideoGeneratorAgnesAPI:
             if self.shutdown_event and self.shutdown_event.is_set():
                 raise RuntimeError("Video generation cancelled by user")
             try:
+                if poll_count % 10 == 0:
+                    logger.info(f"[Agnes Video] Polling video {video_id[:16]}... (poll #{poll_count+1})")
                 resp = await asyncio.to_thread(
                     requests.get,
                     f"{API_ROOT}/agnesapi?video_id={video_id}",
@@ -193,6 +196,7 @@ class VideoGeneratorAgnesAPI:
             if self.shutdown_event and self.shutdown_event.is_set():
                 raise RuntimeError("Video generation cancelled by user")
             try:
+                logger.info(f"[Agnes Video] Submitting {mode_desc} (attempt {attempt+1}/{self.max_retries})...")
                 resp = await asyncio.to_thread(
                     requests.post,
                     f"{BASE_URL}/videos",

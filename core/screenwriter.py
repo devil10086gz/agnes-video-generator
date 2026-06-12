@@ -22,6 +22,7 @@ class Screenwriter:
         }
 
     def _chat(self, system_prompt: str, user_prompt: str) -> str:
+        logger.info(f"[Screenwriter] Calling chat API ({self.model}), prompt length: {len(user_prompt)} chars...")
         resp = requests.post(
             f"{BASE_URL}/chat/completions",
             headers=self.headers,
@@ -73,6 +74,8 @@ class Screenwriter:
                 })
         messages.append({"role": "user", "content": user_content})
 
+        logger.info(f"[Screenwriter] Calling multimodal chat API ({self.model}), "
+                     f"{len(image_paths)} image(s), prompt: {len(text_prompt)} chars...")
         resp = requests.post(
             f"{BASE_URL}/chat/completions",
             headers=self.headers,

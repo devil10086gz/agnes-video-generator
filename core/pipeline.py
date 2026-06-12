@@ -293,7 +293,7 @@ class VideoPipeline:
 
         if self._state.step_end_frame_generation == StepStatus.COMPLETED:
             logger.info(f"[Pipeline] Step end_frame_gen: SKIP (already completed)")
-            return
+            return self._state.pregenerated_end_frames or {}
 
         logger.info(f"[Pipeline] Step end_frame_gen: RUNNING ({len(end_frame_prompts)} frames)")
 
@@ -412,7 +412,7 @@ class VideoPipeline:
     async def _step_generate_videos(self, scenes: list, character_ref_path: str, end_frame_prompts: list, pregenerated_end_frames: dict) -> list:
         if self._state.step_video_generation == StepStatus.COMPLETED:
             logger.info(f"[Pipeline] Step video_gen: SKIP (already completed)")
-            return
+            return []
 
         logger.info(f"[Pipeline] Step video_gen: RUNNING ({len(scenes)} scenes, mode={self._state.chaining_mode})")
 
@@ -437,33 +437,75 @@ class VideoPipeline:
         return all_video_paths
 
     async def _generate_independent_scenes(self, scenes: list, character_ref_path: str, vw: int, vh: int) -> list:
-        all_video_paths = []
         total = len(scenes)
+        pending = []
 
+        # Phase 1: Submit all video tasks, saving scene state for resumability
         for scene_idx, scene_text in enumerate(scenes):
             if self._is_shutdown():
-                raise PipelineShutdown(f"interrupted during scene {scene_idx}")
+                raise PipelineShutdown(f"interrupted during independent scene {scene_idx}")
             scene_dir = os.path.join(self.working_dir, f"scene_{scene_idx}")
             os.makedirs(scene_dir, exist_ok=True)
             video_path = os.path.join(scene_dir, "video.mp4")
 
             if os.path.exists(video_path):
-                all_video_paths.append(video_path)
-                await self._emit("video_gen", "running", f"场景 {scene_idx+1}/{total}: 已缓存", 0.35 + 0.45 * (scene_idx + 1) / total)
                 continue
 
-            await self._emit("video_gen", "running", f"场景 {scene_idx+1}/{total}: 正在生成视频 (ti2vid)...", 0.35 + 0.45 * scene_idx / total)
+            existing_video_id = self._load_scene_task(scene_dir)
+            if existing_video_id:
+                logger.info(f"[Pipeline] Scene {scene_idx}: resuming existing video task {existing_video_id[:16]}...")
+                pending.append({
+                    "scene_idx": scene_idx, "video_path": video_path,
+                    "video_id": existing_video_id, "scene_dir": scene_dir,
+                    "already_submitted": True,
+                })
+                continue
 
-            video_output = await self.video_generator.generate_single_video(
+            await self._emit("video_gen", "running",
+                             f"场景 {scene_idx+1}/{total}: 提交任务 (ti2vid)...",
+                             0.35 + 0.45 * scene_idx / total)
+            video_id = await self.video_generator.submit_video(
                 prompt=scene_text,
                 reference_image_paths=[character_ref_path],
                 duration=self._state.video_duration,
                 width=vw,
                 height=vh,
             )
-            video_output.save(video_path)
-            all_video_paths.append(video_path)
-            await self._emit("video_gen", "running", f"场景 {scene_idx+1}/{total}: 完成", 0.35 + 0.45 * (scene_idx + 1) / total)
+            self._save_scene_task(scene_dir, video_id)
+            pending.append({
+                "scene_idx": scene_idx, "video_path": video_path,
+                "video_id": video_id, "scene_dir": scene_dir,
+                "already_submitted": True,
+            })
+
+        if pending:
+            await self._emit("video_gen", "running",
+                             f"等待 {len(pending)} 个视频生成完成 (independent)...", 0.38)
+
+        # Phase 2: Wait for all submitted videos
+        for info in pending:
+            scene_idx = info["scene_idx"]
+            await self._emit("video_gen", "running",
+                             f"场景 {scene_idx+1}/{total}: 等待生成中...",
+                             0.38 + 0.42 * pending.index(info) / len(pending))
+            try:
+                video_output = await self.video_generator.wait_for_video(info["video_id"])
+                video_output.save(info["video_path"])
+                await self._emit("video_gen", "running",
+                                 f"场景 {scene_idx+1}/{total}: 完成",
+                                 0.38 + 0.42 * (pending.index(info) + 1) / len(pending))
+            except Exception as e:
+                logger.error(f"Scene {scene_idx} video failed: {e}")
+                task_file = os.path.join(info["scene_dir"], "task.json")
+                if os.path.exists(task_file):
+                    os.remove(task_file)
+                raise
+
+        all_video_paths = []
+        for scene_idx in range(len(scenes)):
+            video_path = os.path.join(self.working_dir, f"scene_{scene_idx}", "video.mp4")
+            if os.path.exists(video_path):
+                all_video_paths.append(video_path)
 
         return all_video_paths
 
@@ -484,19 +526,46 @@ class VideoPipeline:
                 last_frame_path = os.path.join(scene_dir, "last_frame.jpg")
                 if os.path.exists(last_frame_path):
                     current_image = last_frame_path
-                await self._emit("video_gen", "running", f"场景 {scene_idx+1}/{total}: 已缓存", 0.35 + 0.45 * (scene_idx + 1) / total)
+                await self._emit("video_gen", "running",
+                                 f"场景 {scene_idx+1}/{total}: 已缓存",
+                                 0.35 + 0.45 * (scene_idx + 1) / total)
                 continue
 
-            await self._emit("video_gen", "running", f"场景 {scene_idx+1}/{total}: 正在生成视频 (ti2vid)...", 0.35 + 0.45 * scene_idx / total)
+            # Check for previously submitted but unwatched task
+            existing_video_id = self._load_scene_task(scene_dir)
 
-            video_output = await self.video_generator.generate_single_video(
-                prompt=scene_text,
-                reference_image_paths=[current_image],
-                duration=self._state.video_duration,
-                width=vw,
-                height=vh,
-            )
-            video_output.save(video_path)
+            if existing_video_id:
+                logger.info(f"[Pipeline] Scene {scene_idx}: resuming existing video task {existing_video_id[:16]}...")
+                await self._emit("video_gen", "running",
+                                 f"场景 {scene_idx+1}/{total}: 续传视频 (ti2vid)...",
+                                 0.35 + 0.45 * scene_idx / total)
+            else:
+                await self._emit("video_gen", "running",
+                                 f"场景 {scene_idx+1}/{total}: 提交任务 (ti2vid)...",
+                                 0.35 + 0.45 * scene_idx / total)
+                video_id = await self.video_generator.submit_video(
+                    prompt=scene_text,
+                    reference_image_paths=[current_image],
+                    duration=self._state.video_duration,
+                    width=vw,
+                    height=vh,
+                )
+                self._save_scene_task(scene_dir, video_id)
+                existing_video_id = video_id
+
+            await self._emit("video_gen", "running",
+                             f"场景 {scene_idx+1}/{total}: 等待生成中...",
+                             0.35 + 0.45 * scene_idx / total)
+            try:
+                video_output = await self.video_generator.wait_for_video(existing_video_id)
+                video_output.save(video_path)
+            except Exception as e:
+                logger.error(f"Scene {scene_idx} video failed: {e}")
+                task_file = os.path.join(scene_dir, "task.json")
+                if os.path.exists(task_file):
+                    os.remove(task_file)
+                raise
+
             all_video_paths.append(video_path)
 
             if scene_idx + 1 < total:
@@ -529,7 +598,9 @@ class VideoPipeline:
                 img_output.save(transition_path)
                 current_image = transition_path
 
-            await self._emit("video_gen", "running", f"场景 {scene_idx+1}/{total}: 完成", 0.35 + 0.45 * (scene_idx + 1) / total)
+            await self._emit("video_gen", "running",
+                             f"场景 {scene_idx+1}/{total}: 完成",
+                             0.35 + 0.45 * (scene_idx + 1) / total)
 
         return all_video_paths
 
@@ -556,6 +627,7 @@ class VideoPipeline:
 
             existing_video_id = self._load_scene_task(scene_dir)
             if existing_video_id:
+                logger.info(f"[Pipeline] Scene {scene_idx}: resuming existing video task {existing_video_id[:16]}...")
                 end_frame_path = os.path.join(scene_dir, "end_frame.png")
                 pending.append({
                     "scene_idx": scene_idx,
@@ -567,8 +639,8 @@ class VideoPipeline:
                 current_first_frame = end_frame_path
                 continue
 
-            if scene_idx in pregenerated_end_frames:
-                end_frame_path = pregenerated_end_frames[scene_idx]
+            if str(scene_idx) in pregenerated_end_frames:
+                end_frame_path = pregenerated_end_frames[str(scene_idx)]
             else:
                 end_frame_path = os.path.join(scene_dir, "end_frame.png")
                 if not os.path.exists(end_frame_path):
@@ -611,6 +683,8 @@ class VideoPipeline:
         new_submissions = [i for i in pending if not i.get("already_submitted")]
         if new_submissions:
             await self._emit("video_gen", "running", f"提交 {len(new_submissions)} 个视频任务 (keyframes)...", 0.35)
+        else:
+            logger.info(f"[Pipeline] All {len(pending)} scene(s) already submitted, waiting for completion...")
 
         for info in new_submissions:
             scene_idx = info["scene_idx"]

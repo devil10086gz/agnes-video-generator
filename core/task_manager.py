@@ -36,7 +36,7 @@ class TaskManager:
                 state = TaskState(**data)
                 state.scenes = [SceneTask(**s) if isinstance(s, dict) else s for s in scenes_raw]
                 self._state = state
-                logger.info(f"[TaskManager] Loaded task {self.task_id}: status={self._state.status}")
+                logger.debug(f"[TaskManager] Loaded task {self.task_id}: status={self._state.status}")
                 return self._state
             except Exception as e:
                 logger.warning(f"[TaskManager] Failed to load task: {e}")

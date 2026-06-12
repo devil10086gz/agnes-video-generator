@@ -19,6 +19,10 @@ from models.task import TaskState, CreateTaskRequest, StepStatus
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# Suppress noisy WebSocket heartbeat / protocol logs from uvicorn and websockets
+logging.getLogger("uvicorn.protocols.websockets").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+
 active_connections: Dict[str, WebSocket] = {}
 active_pipelines: Dict[str, VideoPipeline] = {}
 shutdown_event = asyncio.Event()
@@ -80,7 +84,10 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
 
     try:
         while True:
-            await websocket.receive_text()
+            msg = await websocket.receive_text()
+            # Filter out browser heartbeat / ping-pong frames
+            if not msg or msg.strip().lower() in ("ping", "pong"):
+                continue
     except WebSocketDisconnect:
         logger.info(f"[WS] Client disconnected for task {task_id}")
     except Exception as e:
