@@ -252,6 +252,7 @@ async def create_task(
     chaining_mode: str = Form("keyframes"),
     video_width: int = Form(768),
     video_height: int = Form(1152),
+    video_duration: int = Form(5),
     reference_image: UploadFile = File(None),
     end_frame_images: list = None,
     use_custom_end_frames: bool = Form(False),
@@ -274,6 +275,7 @@ async def create_task(
         chaining_mode=chaining_mode,
         video_width=video_width,
         video_height=video_height,
+        video_duration=video_duration,
         use_custom_end_frames=use_custom_end_frames,
         generate_end_frames_from_ref=generate_end_frames_from_ref,
     )
