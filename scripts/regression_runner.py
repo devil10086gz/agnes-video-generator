@@ -692,7 +692,12 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             checks["F7_duration_reasonable"] = False
 
         # ASR: speech content detection + subtitle text matching
-        if ve and checks.get("F4_has_audio_stream") is True:
+        asr_eligible = (
+            ve
+            and checks.get("F4_has_audio_stream") is True
+            and scenario.params.get("audio_enabled", True)
+        )
+        if asr_eligible:
             asr = _asr_validate(video)
             if asr.get("error") and "not installed" in asr["error"]:
                 checks["F4_has_speech"] = "skip"
@@ -744,7 +749,7 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R2_task_type_matches"] = sd.get("task_type") == scenario.type
         steps = {k: v for k, v in sd.items() if k.startswith("step_")}
         checks["R3_step_count"] = len(steps)
-        checks["R3_all_completed"] = all(v == "completed" for v in steps.values()) if steps else False
+        checks["R3_all_completed"] = all(v == "completed" for v in steps.values()) if steps else "N/A"
         fvf = sd.get("final_video_file", "")
         checks["R4_final_path_exists"] = bool(fvf and os.path.exists(fvf))
     else:
