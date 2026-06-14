@@ -513,99 +513,84 @@ class ManuscriptVideoPipeline(BasePipeline):
         paragraphs: List[ManuscriptParagraph],
         audio_config: AudioConfig,
     ) -> None:
-        """为每个段落生成 TTS 旁白音频和 SRT 字幕文件。
+        """生成**整段连续 TTS 音频 + 整段 SRT 字幕**。
 
-        - 如果 ``audio_config.enabled`` 为 True，使用 ``EdgeTTSEngine`` 生成语音。
-        - 否则使用 ``SilentTTSEngine`` 生成静音占位音频。
-        - 统一通过 ``SubtitleGenerator.cues_to_srt`` 生成 SRT 字幕。
+        将所有段落文本拼接成一篇完整稿件 → 单次 edge_tts 调用 →
+        一条连贯音频 + 一个 ``SubMaker``（含全篇词级时间戳）→ 一个 SRT。
 
-        Resume 策略：优先检查段落状态字段（``narration_audio`` / ``subtitle_srt``），
-        再回退到磁盘文件检查，确保即使 state 已保存但文件被误删也能重新生成。
+        后续拼接步骤（:meth:`_step_concatenate`）只需把整段视频与
+        这条音频+字幕做一次叠加，既避免逐段合成带来的 padding 累积，
+        也确保字幕时间轴与音频精准同步。
 
         Args:
-            paragraphs: 段落列表（就地修改 ``narration_audio`` 和 ``subtitle_srt`` 字段）。
+            paragraphs: 段落列表（用于拼接全文）。
             audio_config: 音频和字幕配置。
         """
-        total = len(paragraphs)
+        full_text = "\n\n".join(p.text for p in paragraphs if p.text)
+        if not full_text:
+            logger.warning("[Manuscript] audio_subtitle: empty full text, skipping")
+            return
+
+        audio_path = os.path.join(self.working_dir, "full_narration.mp3")
+        srt_path = os.path.join(self.working_dir, "full_subtitle.srt")
+
+        # Resume: skip if combined files already exist
+        if os.path.exists(audio_path) and os.path.exists(srt_path):
+            self._state.combined_audio = audio_path
+            self._state.combined_subtitle = srt_path
+            logger.info("[Manuscript] audio_subtitle: combined files already exist, skipping")
+            return
+
         edge_tts = EdgeTTSEngine()
         silent_tts = SilentTTSEngine()
 
-        for i, para in enumerate(paragraphs):
-            self._check_shutdown()
+        await self._emit(
+            "audio_subtitle", "running",
+            f"生成整段旁白+字幕 ({len(full_text)} 字)...",
+            0.60,
+        )
 
-            para_dir = os.path.join(self.working_dir, f"para_{para.index}")
-            audio_path = os.path.join(para_dir, "narration.mp3")
-            srt_path = os.path.join(para_dir, "narration.srt")
-
-            # Resume: check paragraph state fields first, then disk
-            audio_ok = (
-                bool(para.narration_audio) and os.path.exists(para.narration_audio)
-            ) or os.path.exists(audio_path)
-            if audio_ok:
-                resolved_audio = para.narration_audio if (
-                    bool(para.narration_audio) and os.path.exists(para.narration_audio)
-                ) else audio_path
-                para.narration_audio = resolved_audio
-                if os.path.exists(srt_path) or (
-                    bool(para.subtitle_srt) and os.path.exists(para.subtitle_srt)
-                ):
-                    resolved_srt = para.subtitle_srt if (
-                        bool(para.subtitle_srt) and os.path.exists(para.subtitle_srt)
-                    ) else srt_path
-                    para.subtitle_srt = resolved_srt
-                logger.info(
-                    "[Manuscript] audio: paragraph %d already exists, skipping",
-                    para.index,
-                )
-                continue
-
-            os.makedirs(para_dir, exist_ok=True)
-
-            logger.info(
-                "[Manuscript] audio: generating for paragraph %d/%d...",
-                i + 1, total,
+        if audio_config.enabled:
+            audio_result, sub_maker = await edge_tts.generate(
+                text=full_text,
+                output_path=audio_path,
+                voice=audio_config.voice,
+                rate=audio_config.rate,
             )
-            await self._emit(
-                "audio_subtitle", "running",
-                f"生成旁白 {i + 1}/{total}",
-                0.60 + 0.20 * (i / max(total, 1)),
+        else:
+            audio_result, sub_maker = await silent_tts.generate(
+                text=full_text,
+                output_path=audio_path,
             )
 
-            if audio_config.enabled:
-                audio_result, sub_maker = await edge_tts.generate(
-                    text=para.text,
-                    output_path=audio_path,
-                    voice=audio_config.voice,
-                    rate=audio_config.rate,
-                )
-            else:
-                audio_result, sub_maker = await silent_tts.generate(
-                    text=para.text,
-                    output_path=audio_path,
-                )
+        SubtitleGenerator.cues_to_srt(sub_maker, srt_path)
 
-            para.narration_audio = audio_result
-
-            # Generate SRT from cues / SubMaker.
-            SubtitleGenerator.cues_to_srt(sub_maker, srt_path)
-            para.subtitle_srt = srt_path
-
-            # Persist after each paragraph for crash recovery.
-            self.task_manager.update_state(paragraphs=paragraphs)
-            logger.info(
-                "[Manuscript] audio: paragraph %d → %s + %s",
-                para.index, audio_path, srt_path,
-            )
+        self._state.combined_audio = audio_result
+        self._state.combined_subtitle = srt_path
+        self.task_manager.update_state(
+            combined_audio=audio_result,
+            combined_subtitle=srt_path,
+        )
+        logger.info(
+            "[Manuscript] audio_subtitle: combined → %s + %s",
+            audio_path, srt_path,
+        )
 
     async def _step_concatenate(
         self,
         paragraphs: List[ManuscriptParagraph],
         audio_config: AudioConfig,
     ) -> str:
-        """将所有段落视频、旁白、字幕拼接为最终长视频。
+        """先拼接所有段落视频，再统一叠加整段音频 + 整段字幕。
+
+        不再逐段 ``_synthesize_single``（避免 padding 累积），
+        而是参考 MoneyPrinterTurbo 方案：
+        1. 把所有视频按段落顺序拼接成一条完整时间轴
+        2. 挂载整段 ``combined_audio``（全稿 TTS）
+        3. 叠加整段 ``combined_subtitle``（全稿 SRT，时间轴对齐音频）
 
         Args:
-            paragraphs: 已完成视频/音频/字幕生成的段落列表。
+            paragraphs: 已完成视频生成的段落列表。
             audio_config: 音频和字幕样式配置。
 
         Returns:
@@ -613,36 +598,29 @@ class ManuscriptVideoPipeline(BasePipeline):
         """
         output_path = os.path.join(self.working_dir, "final_video.mp4")
 
-        # Resume: if final video already exists, return it directly.
         if os.path.exists(output_path):
             logger.info("[Manuscript] concatenate: final video already exists, skipping")
             return output_path
 
-        # Build clip tuples: (video_path, audio_path, srt_path | None).
-        clip_tuples: List[Tuple[str, str, Optional[str]]] = []
-        for para in paragraphs:
-            if not para.video_file:
-                logger.warning(
-                    "[Manuscript] concatenate: paragraph %d has no video, skipping",
-                    para.index,
-                )
-                continue
-            srt = para.subtitle_srt if para.subtitle_srt else None
-            clip_tuples.append((para.video_file, para.narration_audio, srt))
-
-        if not clip_tuples:
-            raise RuntimeError("[Manuscript] concatenate: no valid clips to concatenate")
+        video_paths = [
+            p.video_file for p in paragraphs
+            if p.video_file and os.path.exists(p.video_file)
+        ]
+        if not video_paths:
+            raise RuntimeError("[Manuscript] concatenate: no valid videos to concatenate")
 
         logger.info(
-            "[Manuscript] concatenate: assembling %d clips...", len(clip_tuples),
+            "[Manuscript] concatenate: %d videos + combined audio + subtitles → %s",
+            len(video_paths), output_path,
         )
-        await self._emit("concatenate", "running", f"拼接 {len(clip_tuples)} 段视频...", 0.85)
+        await self._emit("concatenate", "running", f"拼接 {len(video_paths)} 段视频+音频+字幕...", 0.80)
 
-        await asyncio.to_thread(
-            VideoConcatenator.concat_with_audio,
-            clip_tuples,
-            output_path,
-            audio_config.subtitle_style,
+        VideoConcatenator.concat_videos_with_audio_overlay(
+            video_paths=video_paths,
+            audio_path=self._state.combined_audio or "",
+            srt_path=self._state.combined_subtitle or None,
+            output_path=output_path,
+            subtitle_style=audio_config.subtitle_style,
         )
 
         logger.info("[Manuscript] concatenate: final video → %s", output_path)

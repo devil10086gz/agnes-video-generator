@@ -218,6 +218,9 @@ class ManuscriptVideoTask(BaseTaskState):
     audio_config: AudioConfig = Field(default_factory=AudioConfig)
     video_duration: int = 10
 
+    combined_audio: str = ""
+    combined_subtitle: str = ""
+
     step_split: StepStatus = StepStatus.PENDING
     step_scene_prompts: StepStatus = StepStatus.PENDING
     step_video_generation: StepStatus = StepStatus.PENDING

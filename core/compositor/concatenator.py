@@ -8,7 +8,8 @@ import os
 import shutil
 from typing import List, Optional, Tuple
 
-from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips
+import srt as srt_lib
+from moviepy import AudioFileClip, CompositeVideoClip, VideoFileClip, concatenate_videoclips
 from moviepy.video.tools.subtitles import SubtitlesClip
 
 from models.task import SubtitleStyle
@@ -96,6 +97,120 @@ class VideoConcatenator:
             VideoConcatenator.concat_videos(synthesized_paths, output_path)
 
         logger.info(f"[Compositor] concat_with_audio complete: {output_path}")
+        return output_path
+
+    @staticmethod
+    def concat_videos_with_audio_overlay(
+        video_paths: List[str],
+        audio_path: str,
+        srt_path: Optional[str],
+        output_path: str,
+        subtitle_style: Optional[SubtitleStyle] = None,
+    ) -> str:
+        """先拼接视频，再统一叠加单条音频 + 单条字幕。
+
+        MoneyPrinterTurbo 方案：不按片段做逐段合成（避免 padding 累积），
+        而是先把所有视频拼成完整时间轴，再把音频和字幕作为一个整体叠加上去。
+
+        Args:
+            video_paths: 按顺序的视频路径列表。
+            audio_path: 整段音频文件路径（对应全部视频的总时间轴）。
+            srt_path: 整段 SRT 字幕路径（可选）。
+            output_path: 最终输出文件路径。
+            subtitle_style: 字幕样式配置。
+
+        Returns:
+            输出文件路径。
+        """
+        logger.info(
+            f"[Compositor] concat_videos_with_audio_overlay: "
+            f"{len(video_paths)} videos + {audio_path} → {output_path}"
+        )
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+        if not video_paths:
+            raise RuntimeError("No videos to concatenate")
+
+        # ── Step 1: 拼接所有视频 ──────────────────────────────────────
+        naked_path = output_path.replace(".mp4", "_naked.mp4")
+        VideoConcatenator.concat_videos(video_paths, naked_path)
+
+        # ── Step 2: 加载拼接视频 + 音频 ────────────────────────────────
+        video_clip = VideoFileClip(naked_path)
+        audio_clip = AudioFileClip(audio_path)
+
+        # ── Step 3: 若音频比视频长，冻结尾帧补齐 ─────────────────────
+        target_duration = max(audio_clip.duration + 1.0, video_clip.duration)
+        if video_clip.duration < target_duration:
+            freeze_duration = target_duration - video_clip.duration
+            from core.compositor.processor import VideoProcessor
+            freeze_path = output_path.replace(".mp4", "_freeze.mp4")
+            VideoProcessor.freeze_last_frame(naked_path, freeze_duration, freeze_path)
+            video_clip.close()
+            video_clip = VideoFileClip(freeze_path)
+
+        # ── Step 4: 叠加音频 ──────────────────────────────────────────
+        video_with_audio = video_clip.with_audio(audio_clip)
+
+        # ── Step 5: 叠加字幕（逐条解析 SRT，用独立 TextClip） ────────
+        if srt_path and os.path.exists(srt_path) and subtitle_style:
+            try:
+                from moviepy import TextClip as MpTextClip
+
+                subs_clips = []
+                with open(srt_path, "r", encoding="utf-8") as f:
+                    for sub in srt_lib.parse(f):
+                        txt = sub.content
+                        start_s = sub.start.total_seconds()
+                        end_s = sub.end.total_seconds()
+                        dur = end_s - start_s
+
+                        clip = MpTextClip(
+                            text=txt,
+                            font=subtitle_style.font,
+                            font_size=subtitle_style.fontsize,
+                            color=subtitle_style.color,
+                            stroke_color=subtitle_style.stroke_color,
+                            stroke_width=subtitle_style.stroke_width,
+                            bg_color=subtitle_style.bg_color,
+                            method="label",
+                            size=(video_clip.w - 40, None),
+                            text_align="center",
+                        )
+                        clip = (
+                            clip.with_start(start_s)
+                            .with_end(end_s)
+                            .with_duration(dur)
+                        )
+                        pos = subtitle_style.position
+                        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                            clip = clip.with_position(pos)
+                        else:
+                            clip = clip.with_position(("center", "bottom"))
+                        subs_clips.append(clip)
+
+                if subs_clips:
+                    final = CompositeVideoClip([video_with_audio, *subs_clips])
+                    final.write_videofile(output_path, logger="bar")
+                    final.close()
+                else:
+                    video_with_audio.write_videofile(output_path, logger="bar")
+            except Exception as e:
+                logger.warning(
+                    f"[Compositor] Subtitle overlay failed: {e}, writing without subtitles"
+                )
+                video_with_audio.write_videofile(output_path, logger="bar")
+        else:
+            video_with_audio.write_videofile(output_path, logger="bar")
+
+        video_clip.close()
+        audio_clip.close()
+
+        # Cleanup intermediate file
+        if os.path.exists(naked_path):
+            os.remove(naked_path)
+
+        logger.info(f"[Compositor] concat_videos_with_audio_overlay done: {output_path}")
         return output_path
 
     @staticmethod
