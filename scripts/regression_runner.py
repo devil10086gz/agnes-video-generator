@@ -59,7 +59,7 @@ AGNES_RATE_LIMIT = 20          # 次/分钟
 SCENARIO_WEIGHTS = {
     "S1": 1, "S2": 1, "S3": 1,       # 简单: 1 submit + 轻量轮询
     "C1": 4, "C2": 4, "C3": 3, "C4": 3,  # 创意: Chat + N*Image + N*Video + 轮询
-    "M1": 4, "M2": 5, "M3": 4,        # 稿件: 段落*Chat + 段落*Image + 轮询
+    "M1": 4, "M2": 4,                 # 稿件: 段落*Chat + 段落*Image + 轮询
 }
 MAX_CONCURRENT_WEIGHT = AGNES_RATE_LIMIT // 2
 
@@ -119,46 +119,46 @@ SCENARIO_DEFS = [
         TIMEOUT_SIMPLE, SCENARIO_WEIGHTS["S3"],
         requires_ref_image=True, requires_end_image=True),
 
-    # ── 创意视频 ──
-    ScenarioConfig("C1", "独立场景+配音", "creative",
-        "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "independent",
-         "video_duration": 5,
-         "audio_enabled": True, "audio_voice": "zh-CN-XiaoxiaoNeural"},
-        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C1"]),
-
-    ScenarioConfig("C2", "关键帧链式+配音", "creative",
-        "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "keyframes",
-         "video_duration": 5,
-         "audio_enabled": True, "audio_voice": "zh-CN-XiaoxiaoNeural"},
-        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C2"], requires_ref_image=True),
-
-    ScenarioConfig("C3", "独立场景+静音", "creative",
+    # ── 创意视频（主测无配音，三种场景模式 + 一个配音验证）──
+    ScenarioConfig("C1", "纯文字+独立+无配音", "creative",
         "/api/tasks/creative",
         {"idea": "一只猫在花园里探索的冒险故事",
          "user_requirement": "3个场景，每个场景5秒，动画风格",
          "style": "动画风格", "chaining_mode": "independent",
          "video_duration": 5,
          "audio_enabled": False},
-        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C3"]),
+        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C1"]),
 
-    ScenarioConfig("C4", "自定义尾帧+配音", "creative",
+    ScenarioConfig("C2", "带参考图+关键帧+无配音", "creative",
         "/api/tasks/creative",
         {"idea": "一只猫在花园里探索的冒险故事",
          "user_requirement": "3个场景，每个场景5秒，动画风格",
          "style": "动画风格", "chaining_mode": "keyframes",
          "video_duration": 5,
-         "audio_enabled": True, "audio_voice": "zh-CN-XiaoxiaoNeural",
+         "audio_enabled": False},
+        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C2"], requires_ref_image=True),
+
+    ScenarioConfig("C3", "参考图生成尾帧+关键帧+无配音", "creative",
+        "/api/tasks/creative",
+        {"idea": "一只猫在花园里探索的冒险故事",
+         "user_requirement": "3个场景，每个场景5秒，动画风格",
+         "style": "动画风格", "chaining_mode": "keyframes",
+         "video_duration": 5,
+         "audio_enabled": False,
          "use_custom_end_frames": True,
          "generate_end_frames_from_ref": True},
-        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C4"], requires_ref_image=True),
+        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C3"], requires_ref_image=True),
 
-    # ── 稿件视频 ──
+    ScenarioConfig("C4", "独立场景+配音字幕验证", "creative",
+        "/api/tasks/creative",
+        {"idea": "一只猫在花园里探索的冒险故事",
+         "user_requirement": "3个场景，每个场景5秒，动画风格",
+         "style": "动画风格", "chaining_mode": "independent",
+         "video_duration": 5,
+         "audio_enabled": True, "audio_voice": "zh-CN-XiaoxiaoNeural"},
+        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C4"]),
+
+    # ── 稿件视频（仅短文本，无长文本回归）──
     ScenarioConfig("M1", "短稿件+配音", "manuscript",
         "/api/tasks/manuscript",
         {"manuscript_text": "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，"
@@ -167,20 +167,7 @@ SCENARIO_DEFS = [
          "audio_voice": "zh-CN-XiaoxiaoNeural"},
         TIMEOUT_MANUSCRIPT, SCENARIO_WEIGHTS["M1"]),
 
-    ScenarioConfig("M2", "长稿件+静音", "manuscript",
-        "/api/tasks/manuscript",
-        {"manuscript_text":
-         "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，花朵盛开。"
-         "小猫跳来跳去，非常开心。蝴蝶停在一朵花上，小猫悄悄靠近。"
-         "突然，蝴蝶飞走了，小猫追了上去。它们在花丛中穿梭，"
-         "形成了一幅美丽的画面。花园的另一边，小狗正在树下打盹。"
-         "小鸟在枝头歌唱。整个花园充满了生机与活力。小朋友们也"
-         "来到花园玩耍，他们笑着、跑着，享受着春天的美好时光。"
-         "这一天，阳光正好，微风不燥，一切都是那么和谐美好。",
-         "video_duration": 8, "audio_enabled": False},
-        TIMEOUT_MANUSCRIPT, SCENARIO_WEIGHTS["M2"]),
-
-    ScenarioConfig("M3", "短稿件+自定义字幕", "manuscript",
+    ScenarioConfig("M2", "短稿件+自定义字幕", "manuscript",
         "/api/tasks/manuscript",
         {"manuscript_text": "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，"
          "花朵盛开。小猫跳来跳去，非常开心。蝴蝶停在一朵花上，小猫悄悄靠近。",
@@ -190,7 +177,7 @@ SCENARIO_DEFS = [
          "subtitle_fontsize": 52, "subtitle_position": "top",
          "subtitle_stroke_color": "blue", "subtitle_stroke_width": 3,
          "subtitle_bg_color": "black@0.7"},
-        TIMEOUT_MANUSCRIPT, SCENARIO_WEIGHTS["M3"]),
+        TIMEOUT_MANUSCRIPT, SCENARIO_WEIGHTS["M2"]),
 ]
 
 SCENARIO_MAP = {s.id: s for s in SCENARIO_DEFS}

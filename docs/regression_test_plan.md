@@ -11,8 +11,8 @@
 |----------|-----------|-------------|
 | 简单视频 (Type 1) | 3 | `simple_video.py`, `agnes_video.py`, `task_manager.py` |
 | 创意视频 (Type 2) | 4 | `creative_video.py`, `agnes_image.py`, `agnes_video.py`, `screenwriter.py`, `tts.py`, `subtitle.py`, `concatenator.py` |
-| 稿件视频 (Type 3) | 3 | `manuscript_video.py`, `agnes_video.py`, `screenwriter.py`, `tts.py`, `subtitle.py`, `concatenator.py` |
-| **总计** | **10** | |
+| 稿件视频 (Type 3) | 2 | `manuscript_video.py`, `agnes_video.py`, `screenwriter.py`, `tts.py`, `subtitle.py`, `concatenator.py` |
+| **总计** | **9** | |
 
 ---
 
@@ -28,20 +28,23 @@
 
 ### 2.2 创意视频 (CreativeVideoPipeline)
 
+测试重点：**无配音场景为主**，配音字幕有一个场景验证可用即可。
+
 | ID | 场景 | chaining_mode | 参考图 | 配音 | 覆盖要点 |
 |----|------|--------------|--------|------|---------|
-| C1 | 独立场景+配音 | independent | 无 | 开启 | story→script→video→tts→subtitle→concat 全链路 |
-| C2 | 关键帧链式+配音 | keyframes | 上传参考图 | 开启 | 端帧生成、keyframes 提交、TTS+字幕 |
-| C3 | 独立场景+静音 | independent | 无 | 关闭 | SilentTTSEngine、无配音流程 |
-| C4 | 自定义尾帧+配音 | keyframes | 上传参考图 | 开启 | 自定义尾帧跳过生成、i2i 端帧 |
+| C1 | 纯文字+独立+无配音 | independent | 无 | 关闭 | 纯文字输入、story→script→video→SilentTTS→concat 链路 |
+| C2 | 带参考图+关键帧+无配音 | keyframes | 上传参考图 | 关闭 | 参考图上传、端帧生成、keyframes 提交 |
+| C3 | 参考图生成尾帧+关键帧+无配音 | keyframes | 上传参考图 | 关闭 | `generate_end_frames_from_ref`、i2i 端帧生成、keyframes |
+| C4 | 独立场景+配音字幕验证 | independent | 无 | 开启 | TTS+字幕全链路验证（一个场景覆盖即可） |
 
 ### 2.3 稿件视频 (ManuscriptVideoPipeline)
 
+仅回归短文本场景，无需长文本。
+
 | ID | 场景 | 稿件长度 | 配音 | 覆盖要点 |
 |----|------|---------|------|---------|
-| M1 | 短稿件+配音 | 100-200 字 | 开启 | split→prompt→video→单条 TTS→单条 SRT→concat overlay |
-| M2 | 长稿件+静音 | 500+ 字 | 关闭 | split 多段、静音时间轴、无 TTS 流程 |
-| M3 | 短稿件+配音+字幕样式 | 100-200 字 | 开启 | 自定义 stroke/bg/position 字幕样式 |
+| M1 | 短稿件+配音 | ~100 字 | 开启 | split→prompt→video→TTS→SRT→concat overlay |
+| M2 | 短稿件+自定义字幕 | ~100 字 | 开启 | 自定义 stroke/position/bg 字幕样式 |
 
 ---
 
@@ -175,45 +178,44 @@ def auto_check(task_dir):
 二、创意视频 (Creative)
 ────────────────────────────────────────────────
 
-  C1 [独立场景+配音]     — ✅ 最终产物全部通过
-  C2 [关键帧链式+配音]   — ✅ 最终产物全部通过
-  C3 [独立场景+静音]     — ✅ 最终产物全部通过
-  C4 [自定义尾帧+配音]   — ✅ 最终产物全部通过
+  C1 [纯文字+独立+无配音]           — ✅ 最终产物全部通过
+  C2 [带参考图+关键帧+无配音]       — ✅ 最终产物全部通过
+  C3 [参考图生成尾帧+关键帧+无配音] — ✅ 最终产物全部通过
+  C4 [独立场景+配音字幕验证]         — ✅ 最终产物全部通过
 
   │ 检查项               │ C1      │ C2      │ C3      │ C4      │
   │──────────────────────│────────│────────│────────│────────│
   │ F1 最终视频存在       │ ✅      │ ✅      │ ✅      │ ✅      │
   │ F2 视频时长 > 0      │ {n}s    │ {n}s    │ {n}s    │ {n}s    │
-  │ F4 音频轨道存在       │ ⚠️ 手动  │ ⚠️ 手动  │ ⚠️ 手动  │ ⚠️ 手动  │
-  │ F5 字幕可见性         │ ⚠️ 手动  │ ⚠️ 手动  │ N/A     │ ⚠️ 手动  │
+  │ F4 音频轨道存在       │ N/A¹    │ N/A¹    │ N/A¹    │ ⚠️ 手动  │
+  │ F5 字幕可见性         │ N/A¹    │ N/A¹    │ N/A¹    │ ⚠️ 手动  │
   │ F7 总时长合理         │ ✅      │ ✅      │ ✅      │ ✅      │
   │ R3 step_* 状态       │ ✅      │ ✅      │ ✅      │ ✅      │
   │ R5 scene_N/task.json │ ✅      │ ✅      │ ✅      │ ✅      │
-  │ R7 scene_N/narration │ ✅      │ ✅      │ ✅      │ ✅      │
-  │ R8 scene_N/subtitle  │ ✅      │ N/A*    │ N/A     │ ✅      │
+  │ R7 scene_N/narration │ N/A¹    │ N/A¹    │ N/A¹    │ ✅      │
+  │ R8 scene_N/subtitle  │ N/A¹    │ N/A¹    │ N/A¹    │ ✅      │
 
-  *注: C2 keyframes 模式字幕待确认实际文件路径
+  ¹ C1-C3 无配音，音频/字幕相关检查标记为 N/A
 
 ────────────────────────────────────────────────
 三、稿件视频 (Manuscript)
 ────────────────────────────────────────────────
 
-  M1 [短稿件+配音]        — ✅ 最终产物全部通过
-  M2 [长稿件+静音]        — ✅ 最终产物全部通过
-  M3 [短稿件+自定义字幕]  — ✅ 最终产物全部通过
+  M1 [短稿件+配音]     — ✅ 最终产物全部通过
+  M2 [短稿件+自定义字幕] — ✅ 最终产物全部通过
 
-  │ 检查项                      │ M1      │ M2      │ M3      │
-  │────────────────────────────│────────│────────│────────│
-  │ F1 最终视频存在              │ ✅      │ ✅      │ ✅      │
-  │ F2 视频时长 > 0             │ {n}s    │ {n}s    │ {n}s    │
-  │ F4 音频轨道存在              │ ⚠️ 手动  │ ⚠️ 手动  │ ⚠️ 手动  │
-  │ F5 字幕可见性                │ ⚠️ 手动  │ N/A     │ ⚠️ 手动  │
-  │ F6 字幕文本匹配              │ ⚠️ 手动  │ N/A     │ ⚠️ 手动  │
-  │ F7 总时长合理                │ ✅      │ ✅      │ ✅      │
-  │ R9 full_narration.mp3       │ ✅      │ ✅      │ ✅      │
-  │ R10 full_subtitle.srt       │ ✅      │ N/A     │ ✅      │
-  │ R5 para_N/task.json         │ ✅      │ ✅      │ ✅      │
-  │ R6 para_N/curl.sh           │ ✅      │ ✅      │ ✅      │
+  │ 检查项                      │ M1      │ M2      │
+  │────────────────────────────│────────│────────│
+  │ F1 最终视频存在              │ ✅      │ ✅      │
+  │ F2 视频时长 > 0             │ {n}s    │ {n}s    │
+  │ F4 音频轨道存在              │ ⚠️ 手动  │ ⚠️ 手动  │
+  │ F5 字幕可见性                │ ⚠️ 手动  │ ⚠️ 手动  │
+  │ F6 字幕文本匹配              │ ⚠️ 手动  │ ⚠️ 手动  │
+  │ F7 总时长合理                │ ✅      │ ✅      │
+  │ R9 full_narration.mp3       │ ✅      │ ✅      │
+  │ R10 full_subtitle.srt       │ ✅      │ ✅      │
+  │ R5 para_N/task.json         │ ✅      │ ✅      │
+  │ R6 para_N/curl.sh           │ ✅      │ ✅      │
 
 ────────────────────────────────────────────────
 四、需用户手动验证部分
@@ -221,12 +223,12 @@ def auto_check(task_dir):
 
   1. 音频/旁白正确性
      - 播放 {task_dir}/final_video.mp4，确认旁白/静音符合配置
-     - 预期: C1/C2/C4/M1/M3 应有 TTS 中文朗读
-     - 预期: C3/M2 应无声或静音
+     - 预期: C4/M1/M2 应有 TTS 中文朗读
+     - 预期: C1/C2/C3 应无声或静音（无配音场景）
 
   2. 字幕正确性
      - 播放时观察字幕内容、样式、出现时机
-     - 预期: 字幕文本与输入一致，样式（描边/背景/位置）符合配置
+     - 预期: C4/M1/M2 字幕文本与输入一致，M2 样式（描边/背景/位置）符合配置
 
   3. 断点续传
      - 手动停止服务 → 重启 → 在任务列表点击"续传"
@@ -270,11 +272,11 @@ def auto_check(task_dir):
 |---------|-----------|----------------------------------|
 | 简单 (S1-S3) | 1 | 1 次 submit + 轮询 ~4 次/分钟 |
 | 创意 (C1-C4) | 3-4 | Chat + N×Image + N×Video + 轮询 |
-| 稿件 (M1-M3) | 4-5 | 段落×Chat + 段落×Image + 轮询 |
+| 稿件 (M1-M2) | 4 | 段落×Chat + 段落×Image + 轮询 |
 
 - **总权重上限 = 10**（Agnes API 上限 20 次/分钟，留 50% 余量）
-- 例：可同时运行 2 个创意(权重 8) + 2 个简单(权重 2)
-- 例：或 1 个稿件(权重 5) + 1 个创意(权重 4) + 1 个简单(权重 1)
+- 例：可同时运行 2 个创意(权重 7) + 3 个简单(权重 3) = 10 ✅
+- 例：或 1 个稿件(权重 4) + 1 个创意(权重 4) + 2 个简单(权重 2) = 10 ✅
 
 #### 执行命令
 
@@ -348,7 +350,7 @@ python scripts/regression_runner.py --quick
     "E1": { "status": "passed", "detail": "200" }
   },
   "summary": {
-    "total": 10, "completed": 3, "failed": 0, "running": 1
+    "total": 9, "completed": 3, "failed": 0, "running": 1
   }
 }
 ```
@@ -427,8 +429,8 @@ AGNES_RATE_LIMIT = 20  (次/分钟，平台限制)
 MAX_WEIGHT = AGNES_RATE_LIMIT / 2 = 10  (留 50% 余量)
 
 并发场景一例:
-  2 × Creative (权重 4+3=7) + 3 × Simple (权重 3) = 10 ✅
-  1 × Manuscript (权重 5) + 1 × Creative (权重 4) + 1 × Simple (1) = 10 ✅
+  1 × Creative (w=4) + 1 × Manuscript (w=4) + 2 × Simple (w=2) = 10 ✅
+  2 × Creative (w=7) + 3 × Simple (w=3) = 10 ✅
 ```
 
 ---
