@@ -1,50 +1,67 @@
 # Agnes Video Generator v2.0 — 完整开发计划
 
-> **当前阶段**：🟢 规划完成 — 等待用户说"继续2.0版本开发"或"开始开发"
-> **下一步**：启动 `software-engineer` 按 T01→T02→T03→T04→T05 顺序编写全部代码
-> **文档版本**：v2.0 | **最后更新**：2025-06-14
+> **当前阶段**：🟢 规划完成 — 等待用户说"继续2.0版本开发"
+> **执行模式**：**分批实现 → 分批验证 → 每批向用户确认**，禁止一次性全量实现
+> **文档版本**：v3.0 | **最后更新**：2025-06-14
 > **依赖阅读**：`AGENTS.md`（角色定义+规范）、`docs/system_design.md`（架构+任务分解）、`docs/test_plan.md`（测试流程）
 
 ---
 
-## 0. 继续开发的正确方式
+## 0. 分批执行流程（CRITICAL）
 
-当用户发出以下任一指令时，主理人应立即执行第 0.1 节的操作：
+### 核心原则
 
-| 用户可能的说法 | 含义 |
-|--------------|------|
-| "继续2.0版本开发" | 进入实现阶段 |
-| "开始开发" / "开始实现" | 同上 |
-| "继续" / "go ahead" | 同上 |
+```
+❌ 禁止：一次性实现全部 T01-T05 → 最后才测试
+✅ 必须：实现一批 → 验证一批 → 确认一批 → 下一批
+```
 
-### 0.1 主理人收到"继续开发"指令时的操作清单
+### 三批执行总览
+
+```
+                        ┌── 主理人向用户确认 ──┐
+                        ↓                       │
+Batch A (T01)  →  QA验证A  →  ✅用户确认  →  Batch B (T02+T03)
+    基础设施                              │
+                                         ↓
+                                    QA验证B  →  ✅用户确认  →  Batch C (T04+T05)
+                                                                      │
+                                                                      ↓
+                                                                 QA验证C  →  ✅交付
+```
+
+### 0.1 主理人收到"继续2.0版本开发"时的标准操作
 
 ```
 [ ] 1. 确认团队已存在（software-agnes-refactor），若不存在则 TeamCreate
-[ ] 2. 阅读 docs/system_design.md 第10节（任务列表）确认 T01-T05 完整规格
-[ ] 3. 阅读 AGENTS.md 第四节（工程师工作说明）确认代码规范
-[ ] 4. 启动 software-engineer，下发 T01-T05 全部任务（一次性完成所有文件）
-[ ] 5. 工程师产出代码后 → 启动 software-qa-engineer 按 test_plan.md 测试
-[ ] 6. QA 通过 → 交付总结
+[ ] 2. 阅读 docs/system_design.md 确认当前批次任务规格
+[ ] 3. 阅读 AGENTS.md 确认代码规范
+[ ] 4. 启动 software-engineer，仅下发**当前批次**的任务（从 Batch A 开始）
+[ ] 5. 工程师完成当前批次后 → 核对 AGENTS.md 全局一致性审查清单
+[ ] 6. 启动 software-qa-engineer 验证当前批次
+[ ] 7. QA 通过 → 向用户汇报当前批次结果，**等待用户确认后**进入下一批
+[ ] 8. QA 不通过 → 反馈工程师修复 → 重新验证（最多 2 轮）
 ```
 
-### 0.2 工程师启动提示词模板
+### 0.2 工程师启动提示词模板（每批独立）
 
-> 以下是 Agnes Video Generator v2.0 改造任务。请阅读以下文件了解完整上下文：
-> - `docs/development_plan.md` — 开发计划总览
-> - `docs/system_design.md` — 架构设计 + 任务列表（重点关注第10节）
-> - `AGENTS.md` — 代码规范、日志前缀、共享知识
-> - `core/video_generator.py` — 现有 Agnes Video API 封装（需迁移到 core/api/agnes_video.py）
-> - `core/image_generator.py` — 现有 Image API 封装（需迁移到 core/api/agnes_image.py）
-> - `core/screenwriter.py` — 现有 Chat API 调用（需提取到 core/api/agnes_chat.py）
-> - `core/pipeline.py` — 现有创意视频流水线（需迁移到 core/pipelines/creative_video.py）
-> - `models/task.py` — 现有数据模型（需重写为泛化版本）
-> - `server.py` — 现有路由（需重写支持三种任务类型）
-> - `static/index.html` — 现有前端（需重写为三Tab架构）
+> 以下是 Agnes Video Generator v2.0 **第 X 批（Batch X）** 实现任务。
 >
-> 按 T01→T02→T03→T04→T05 顺序实现。全部文件写完后执行全局一致性审查。
+> 请先阅读以下文件了解完整上下文：
+> - `docs/development_plan.md` — 开发计划总览（重点看当前批次的任务清单）
+> - `docs/system_design.md` — 架构设计（重点看当前批次相关章节）
+> - `AGENTS.md` — 代码规范、日志前缀、共享知识
+>
+> **当前批次任务**：[列出本批次的文件清单和设计要求]
+>
+> **重要提醒**：
+> - 只实现当前批次的任务，不要跨批次实现
+> - 完成后自行运行可离线验证的检查（Python 语法、导入测试）
+> - 完成后执行全局一致性审查（仅审查本批次涉及的条目）
 
 ---
+
+## 1. 交付目标
 
 ## 1. 交付目标
 
@@ -118,20 +135,25 @@ core/
 
 ---
 
-## 5. 实现任务
+## 5. 分批任务
 
-### 任务依赖图
+### 批次依赖图
 
 ```
-T01 → T02 → T03 → T04 → T05
+Batch A (T01) ──→ Batch B (T02+T03) ──→ Batch C (T04+T05)
+    ↑                   ↑                    ↑
+ 验证后确认           验证后确认            验证后确认
 ```
 
-### T01：基础设施与数据模型
+---
+
+### Batch A：基础设施与数据模型（T01）
 
 | 属性 | 值 |
 |------|-----|
-| 优先级 | P0 |
-| 依赖 | 无 |
+| 批次 ID | Batch A |
+| 对应任务 | T01 |
+| 优先级 | P0（最优先，后续批次的基础） |
 | 文件数 | 5 |
 
 **变更清单**：
@@ -140,84 +162,141 @@ T01 → T02 → T03 → T04 → T05
 |------|------|------|
 | `requirements.txt` | 修改 | 新增 edge_tts>=6.1.0, srt>=3.5.0 |
 | `models/task.py` | 重写 | TaskType枚举、BaseTaskState、SimpleVideoTask、CreativeVideoTask、ManuscriptVideoTask、AudioConfig、SubtitleStyle、ManuscriptParagraph |
-| `models/__init__.py` | 修改 | 导出新模型 |
-| `core/config.py` | 修改 | DEFAULT_VOICE、SUBTITLE_STYLE、get_default_audio_config() |
-| `core/task_manager.py` | 修改 | 泛化 load/save，向后兼容旧数据 |
+| `models/__init__.py` | 修改 | 导出所有新模型 |
+| `core/config.py` | 修改 | DEFAULT_VOICE、DEFAULT_SUBTITLE_STYLE、get_default_audio_config()、get_default_subtitle_style() |
+| `core/task_manager.py` | 修改 | 泛化 load/save，向后兼容（无 task_type → CREATIVE） |
 
-### T02：通用组件层
+**验证清单（Batch A 专属）**：
+
+```
+[ ] A1: Python 语法检查 — python -m py_compile models/task.py models/__init__.py core/config.py core/task_manager.py
+[ ] A2: 导入验证 — from models.task import TaskType, SimpleVideoTask, CreativeVideoTask, ManuscriptVideoTask, AudioConfig, SubtitleStyle
+[ ] A3: 序列化测试 — SimpleVideoTask(...).model_dump_json() 正常输出
+[ ] A4: 旧数据兼容 — TaskManager.load(dir_with_old_format) 不抛异常，返回 CreativeVideoTask
+[ ] A5: config 工厂函数 — get_default_audio_config() 返回结构完整，字段有默认值
+[ ] A6: requirements.txt — pip install -r requirements.txt 成功（含 edge_tts）
+```
+
+**完成标准**：全部 A1-A6 通过，主理人汇总后请用户确认。
+
+---
+
+### Batch B：通用组件 + 业务流水线（T02+T03）
 
 | 属性 | 值 |
 |------|-----|
+| 批次 ID | Batch B |
+| 对应任务 | T02 + T03 |
 | 优先级 | P0 |
-| 依赖 | T01 |
-| 文件数 | 10 |
+| 依赖 | ✅ Batch A 完成并确认 |
+| 文件数 | 14 |
 
 **变更清单**：
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `core/api/__init__.py` | 新增 | 导出 |
-| `core/api/agnes_image.py` | 迁移+重构 | 从 image_generator.py |
-| `core/api/agnes_video.py` | 迁移+重构 | 从 video_generator.py |
-| `core/api/agnes_chat.py` | 提取 | Screenwriter 通用 Chat 方法 |
+| `core/api/__init__.py` | 新增 | 导出 AgnesImageAPI / AgnesVideoAPI / AgnesChatAPI |
+| `core/api/agnes_image.py` | 迁移 | 从 core/image_generator.py，类名 ImageGeneratorAgnesAPI → AgnesImageAPI |
+| `core/api/agnes_video.py` | 迁移 | 从 core/video_generator.py，类名 VideoGeneratorAgnesAPI → AgnesVideoAPI |
+| `core/api/agnes_chat.py` | 提取 | 从 core/screenwriter.py 提取 _chat/_chat_json/_chat_multimodal |
 | `core/audio/__init__.py` | 新增 | 导出 |
 | `core/audio/tts.py` | 新增 | EdgeTTSEngine + SilentTTSEngine |
-| `core/audio/subtitle.py` | 新增 | SubtitleGenerator |
+| `core/audio/subtitle.py` | 新增 | SubtitleGenerator（cues→SRT + moviepy 叠加） |
 | `core/compositor/__init__.py` | 新增 | 导出 |
-| `core/compositor/concatenator.py` | 新增 | VideoConcatenator |
-| `core/compositor/processor.py` | 新增 | VideoProcessor |
-
-### T03：业务流水线层
-
-| 属性 | 值 |
-|------|-----|
-| 优先级 | P0 |
-| 依赖 | T02 |
-| 文件数 | 4 |
-
-**变更清单**：
-
-| 文件 | 操作 | 说明 |
-|------|------|------|
+| `core/compositor/concatenator.py` | 新增 | VideoConcatenator（纯拼接 + concat_with_audio） |
+| `core/compositor/processor.py` | 新增 | VideoProcessor（缩放/帧提取/静音） |
 | `core/pipelines/__init__.py` | 新增 | BasePipeline + 导出 |
 | `core/pipelines/simple_video.py` | 新增 | 简单视频流水线 |
-| `core/pipelines/creative_video.py` | 新增 | 创意长视频（从 pipeline.py + 音频字幕） |
-| `core/pipelines/manuscript_video.py` | 新增 | 稿件长视频（含时间拆段） |
-| `core/screenwriter.py` | 修改 | 使用 AgnesChatAPI，新增 generate_scene_prompt_for_paragraph() |
+| `core/pipelines/creative_video.py` | 新增 | 创意长视频（从 pipeline.py + 音频字幕步骤） |
+| `core/pipelines/manuscript_video.py` | 新增 | 稿件长视频（含时间拆段算法） |
+| `core/screenwriter.py` | 修改 | 改用 AgnesChatAPI；新增 generate_scene_prompt_for_paragraph() |
+| `core/image_generator.py` | 删除或留别名 | 旧文件指向 core/api/agnes_image.py |
+| `core/video_generator.py` | 删除或留别名 | 旧文件指向 core/api/agnes_video.py |
+| `core/pipeline.py` | 删除或留别名 | 旧文件指向 core/pipelines/creative_video.py |
 
-### T04：服务端集成
+**验证清单（Batch B 专属）**：
+
+```
+[ ] B1: 导入链完整 — python -c "from core.api import AgnesImageAPI,AgnesVideoAPI,AgnesChatAPI;from core.audio import EdgeTTSEngine,SubtitleGenerator;from core.compositor import VideoConcatenator;from core.pipelines import SimpleVideoPipeline,CreativeVideoPipeline,ManuscriptVideoPipeline"
+[ ] B2: Screenwriter 使用 AgnesChatAPI — grep "requests.post" core/screenwriter.py 无结果或仅旧注释
+[ ] B3: 日志前缀正确 — 检查 api/ 文件用 [AgnesImage]/[AgnesVideo]/[AgnesChat]；audio/ 用 [TTS]/[Subtitle]；compositor/ 用 [Compositor]；pipelines/ 用 [Simple]/[Pipeline]/[Manuscript]
+[ ] B4: SubtitleGenerator.cues_to_srt() — 输入虚拟 cues → 输出合法 SRT 格式
+[ ] B5: split_manuscript() 算法 — 边界测试（空文本/单句短/单句长/多句混合）
+[ ] B6: 三个 Pipeline 类结构完整 — 都有 run() 方法，签名正确
+[ ] B7: 旧文件兼容 — 旧 import 路径如有保留别名，from core.image_generator import ImageGeneratorAgnesAPI 仍然可用
+```
+
+**完成标准**：全部 B1-B7 通过，主理人汇总后请用户确认。
+
+---
+
+### Batch C：服务端集成 + 前端（T04+T05）
 
 | 属性 | 值 |
 |------|-----|
+| 批次 ID | Batch C |
+| 对应任务 | T04 + T05 |
 | 优先级 | P0 |
-| 依赖 | T03 |
-| 文件数 | 2 |
+| 依赖 | ✅ Batch B 完成并确认 |
+| 文件数 | 3 |
 
 **变更清单**：
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `server.py` | 重写 | 三种任务路由、Pipeline工厂、WebSocket保持 |
-| `core/__init__.py` | 修改 | 更新导出 |
+| `server.py` | 重写 | 三种任务路由（simple/creative/manuscript）、Pipeline 工厂、WebSocket 保持 |
+| `core/__init__.py` | 修改 | 更新顶层导出 |
+| `static/index.html` | 重写 | 三 Tab 架构 + 结构化表单 + i18n 7 语言补全 |
 
-**新增 API**：
-- `POST /api/tasks/simple`
-- `POST /api/tasks/creative`
-- `POST /api/tasks/manuscript`
+**新增 API 端点**：
+- `POST /api/tasks/simple` — 创建简单视频任务
+- `POST /api/tasks/creative` — 创建创意长视频任务
+- `POST /api/tasks/manuscript` — 创建稿件长视频任务
 
-### T05：前端重构
+**验证清单（Batch C 专属）**：
 
-| 属性 | 值 |
-|------|-----|
-| 优先级 | P0 |
-| 依赖 | T04 |
-| 文件数 | 1 |
+```
+[ ] C1: 服务启动 — python server.py 无报错，监听 8765 端口
+[ ] C2: GET / → 返回 index.html，浏览器打开三 Tab 结构可见
+[ ] C3: i18n — 切换 7 种语言，所有新增文案翻译不缺失
+[ ] C4: POST /api/tasks/simple — curl 发送合法参数 → 返回 {"ok":true,"task_id":"..."}
+[ ] C5: POST /api/tasks/creative — 同上
+[ ] C6: POST /api/tasks/manuscript — 同上
+[ ] C7: GET /api/tasks — 返回列表，包含三种 task_type
+[ ] C8: GET /api/tasks/{id} — 返回含 task_type 字段的详情
+[ ] C9: 简单视频 Tab — 切换模式时参考图/尾帧上传区正确显示/隐藏
+[ ] C10: 稿件长视频 Tab — textarea + [预览拆分] 按钮存在且可交互
+[ ] C11: 创意长视频 Tab — 音频配置区（旁白开关/语音角色/语速/字幕样式）可见
+```
 
-**变更清单**：
+**完成标准**：全部 C1-C11 通过，主理人汇总交付。
 
-| 文件 | 操作 | 说明 |
-|------|------|------|
-| `static/index.html` | 重写 | 三Tab架构 + 结构化表单 + i18n 补全 |
+---
+
+## 6. 每批完成后的主理人确认模板
+
+向用户汇报时使用以下格式：
+
+```
+## ✅ Batch X 完成
+
+**批次**：Batch X — [批次名称]
+**任务**：Txx — [任务描述]
+**文件**：N 个文件已创建/修改
+
+**验证结果**：
+| 检查项 | 状态 |
+|--------|------|
+| X1: ... | ✓ |
+| X2: ... | ✓ |
+| ... | ... |
+
+**IS_PASS**：YES / NO（附问题列表）
+
+**下一步**：Batch Y — [下一批名称]，预计 N 个文件
+
+是否继续下一批？
+```
 
 ---
 
@@ -277,16 +356,18 @@ python server.py
 
 ## 10. 阶段状态
 
-| 阶段 | 状态 | 完成日期 |
-|------|------|---------|
-| PRD（产品需求） | ✅ 完成 | 2025-06-14 |
-| 系统设计 + 任务分解 | ✅ 完成 | 2025-06-14 |
-| 开发计划文档 | ✅ 完成 | 2025-06-14 |
-| **代码实现（T01-T05）** | ⏳ **等待启动** | — |
-| QA 测试验证 | ⏳ 未开始 | — |
+| 阶段 | 状态 | 批次 | 完成日期 |
+|------|------|------|---------|
+| PRD（产品需求） | ✅ 完成 | — | 2025-06-14 |
+| 系统设计 + 任务分解 | ✅ 完成 | — | 2025-06-14 |
+| 开发计划文档 | ✅ 完成 | — | 2025-06-14 |
+| **Batch A：基础设施** | ⏳ **等待启动** | T01（5 文件） | — |
+| **Batch B：通用组件+流水线** | ⏳ 等待 Batch A | T02+T03（14 文件） | — |
+| **Batch C：服务端+前端** | ⏳ 等待 Batch B | T04+T05（3 文件） | — |
+| QA 最终验收 | ⏳ 未开始 | — | — |
 
-> **当用户说"继续2.0版本开发"时，主理人应按照本文档第 0 节的清单启动工程师。**
+> **当用户说"继续2.0版本开发"时，主理人从 Batch A 开始，走 实现→验证→确认 循环。**
 
 ---
 
-*文档版本：v2.0 | 状态：🟢 规划完成，等待启动 | 分支：v2.0-dev*
+*文档版本：v3.0 | 状态：🟢 规划完成，等待启动 | 执行模式：分批 | 分支：v2.0-dev*

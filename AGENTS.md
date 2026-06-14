@@ -13,22 +13,52 @@
 
 | 用户说法 | 主理人应执行的操作 | 说明 |
 |---------|-------------------|------|
-| **"继续2.0版本开发"** | 启动 `software-engineer` 实现 T01-T05 全部代码 | 进入实现阶段 |
+| **"继续2.0版本开发"** | 从 **Batch A** 开始分批执行（实现→验证→确认→下一批） | 进入实现阶段 |
 | **"开始开发"** / **"开始实现"** | 同上 | 同义触发词 |
-| **"继续"** / **"go ahead"** | 同上（需结合上下文确认指 2.0 开发） | 模糊触发词，需确认 |
+| **"继续下一批"** / **"继续 Batch X"** | 启动下一批次的实现 | 当前批次已确认后使用 |
+| **"继续"** | 同上（需结合上下文确认指当前批次） | 模糊触发词，需确认 |
 | **"只做 PRD"** / **"需求分析"** | 仅启动 `software-product-manager` | 部分工作流 |
 | **"架构评审"** | 仅启动 `software-architect` | 部分工作流 |
 | **"修复 Bug: ..."** | 启动 `software-engineer`（BugFix 快捷路径） | 跳过 PRD/架构 |
 
-### 主理人收到"继续2.0版本开发"的标准操作
+### 分批执行流程
 
 ```
-1. 确认 team 存在（software-agnes-refactor），若不存在则 TeamCreate
-2. 阅读 docs/development_plan.md（完整计划）
-3. 阅读 docs/system_design.md 第10-12节（任务列表+共享知识+依赖图）
-4. 阅读本文档第四节"工程师工作说明"（代码规范+审查清单）
-5. 启动 software-engineer，下发完整任务规格（含文件路径、操作类型、设计要求）
-6. 工程师完成后 → 启动 software-qa-engineer 按 docs/test_plan.md 测试
+用户说 "继续2.0版本开发"
+       ↓
+┌──────────────────────────────────────────────┐
+│ 主理人启动 Batch A（T01，5 文件）              │
+│   → software-engineer 实现                    │
+│   → software-qa-engineer 验证（6 项检查）      │
+│   → 向用户汇报结果，等待确认                    │
+└──────────────────────────────────────────────┘
+       ↓ 用户确认
+┌──────────────────────────────────────────────┐
+│ 主理人启动 Batch B（T02+T03，14 文件）         │
+│   → software-engineer 实现                    │
+│   → software-qa-engineer 验证（7 项检查）      │
+│   → 向用户汇报结果，等待确认                    │
+└──────────────────────────────────────────────┘
+       ↓ 用户确认
+┌──────────────────────────────────────────────┐
+│ 主理人启动 Batch C（T04+T05，3 文件）          │
+│   → software-engineer 实现                    │
+│   → software-qa-engineer 验证（11 项检查）     │
+│   → 向用户汇报结果，交付完成                    │
+└──────────────────────────────────────────────┘
+```
+
+### 主理人每批操作清单
+
+```
+[ ] 1. 确认团队存在（software-agnes-refactor）
+[ ] 2. 阅读 docs/development_plan.md 确认当前批次任务 + 验证清单
+[ ] 3. 启动 software-engineer，下发当前批次任务（仅本批次，不跨批）
+[ ] 4. 工程师完成后 → 核实 AGENTS.md 全局一致性审查清单中本批次相关条目
+[ ] 5. 启动 software-qa-engineer，按验证清单逐项验证
+[ ] 6. QA 全部通过 → 使用"每批完成确认模板"向用户汇报
+[ ] 7. QA 不通过（源码 Bug）→ 反馈工程师修复 → 重新验证（最多 2 轮）
+[ ] 8. 用户确认后 → 继续下一批
 ```
 
 ---
@@ -387,16 +417,20 @@ def split_manuscript(text: str) -> list[dict]:
 
 ## 八、阶段状态
 
-| 阶段 | 状态 | 产出 |
-|------|------|------|
-| PRD 产品需求 | ✅ 完成 | `PRD_REFACTOR.md` |
-| 系统设计 | ✅ 完成 | `docs/system_design.md` + `class-diagram.mermaid` + `sequence-diagram.mermaid` |
-| 开发计划 | ✅ 完成 | `docs/development_plan.md` |
-| **代码实现** | ⏳ **等待启动** | — |
-| QA 测试 | ⏳ 未开始 | — |
+| 阶段 | 批次 | 状态 | 产出 |
+|------|------|------|------|
+| PRD 产品需求 | — | ✅ 完成 | `PRD_REFACTOR.md` |
+| 系统设计 | — | ✅ 完成 | `docs/system_design.md` + `class-diagram.mermaid` + `sequence-diagram.mermaid` |
+| 开发计划 | — | ✅ 完成 | `docs/development_plan.md` |
+| **Batch A：基础设施** | T01（5文件） | ⏳ **等待启动** | models/task.py, config.py, task_manager.py... |
+| **Batch B：组件+流水线** | T02+T03（14文件） | ⏳ 等待 Batch A | api/, audio/, compositor/, pipelines/ |
+| **Batch C：服务端+前端** | T04+T05（3文件） | ⏳ 等待 Batch B | server.py, index.html |
+| QA 最终验收 | — | ⏳ 未开始 | — |
 
-> **下一步**：当用户说"继续2.0版本开发"时，主理人按本文档第〇节的清单启动 `software-engineer`。
+> **下一步**：当用户说"继续2.0版本开发"时，主理人从 **Batch A** 开始，走 实现→验证→确认→下一批 循环。
+>
+> **禁止一次性全量实现**。每批完成后必须经过 QA 验证并通过用户确认才能进入下一批。
 
 ---
 
-*文档版本：v2.0 | 更新日期：2025-06-14 | 配套：docs/development_plan.md*
+*文档版本：v3.0 | 更新日期：2025-06-14 | 执行模式：分批 | 配套：docs/development_plan.md*

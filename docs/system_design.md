@@ -1,7 +1,8 @@
 # Agnes Video Generator v2.0 — 系统设计文档
 
-> **当前阶段**：🟢 设计完成 — 任务列表就绪，等待用户说"继续2.0版本开发"启动工程师
-> **配套文档**：`AGENTS.md`（规范）、`docs/development_plan.md`（总计划）、`docs/test_plan.md`（测试计划）
+> **当前阶段**：🟢 设计完成 — 任务列表就绪，等待用户说"继续2.0版本开发"启动分批实现
+> **执行模式**：分批（Batch A → B → C），每批 实现→验证→确认
+> **配套文档**：`AGENTS.md`（规范）、`docs/development_plan.md`（分批计划）、`docs/test_plan.md`（分批验证清单）
 
 ## Part A: 系统设计
 
