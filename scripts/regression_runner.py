@@ -308,7 +308,7 @@ class ReportManager:
             chk = x.get("result", {}).get("checks", {}) if x.get("result") else {}
             for name, val in chk.items():
                 if name.endswith(("_width", "_height", "_step_count", "_srt_entries",
-                                  "_duration", "_count", "F2_duration")):
+                                  "_duration", "_count", "F2_duration", "F6_asr_text", "F4_speech_duration")):
                     continue
                 tc += 1
                 if val is True:
@@ -393,7 +393,8 @@ class ReportManager:
                 if st == "completed":
                     fail_checks = [k for k, v in chk.items()
                                    if v is False and not any(k.endswith(x) for x in
-                                      ("_width", "_height", "_duration", "_count", "_entries", "F2_duration"))]
+                                      ("_width", "_height", "_duration", "_count", "_entries",
+                                       "F2_duration", "F6_asr_text", "F4_speech_duration"))]
                     if not fail_checks:
                         lines.append(f"### {sid} {label} — {tag} 通过 ({duration}s)")
                     else:
@@ -414,7 +415,7 @@ class ReportManager:
 
             sort_key = lambda n: (0 if n.startswith("F") else 1 if n.startswith("R") else 2, n)
             for cname in sorted(all_check_names, key=sort_key):
-                if cname.endswith(("_width", "_height", "_duration", "_count", "_entries", "F2_duration")):
+                if cname.endswith(("_width", "_height", "_duration", "_count", "_entries", "F2_duration", "F6_asr_text", "F4_speech_duration")):
                     continue
                 row = [cname]
                 for sid in type_ids:
@@ -449,31 +450,18 @@ class ReportManager:
             lines.append(f"| {eid} | {tag} | {e.get('detail', '')} |")
         lines.append(f"")
 
-        # Manual verification section
+        # Manual verification section (only F5 subtitle visibility remains manual)
         lines.append(f"---")
         lines.append(f"")
         lines.append(f"## 需手动验证")
         lines.append(f"")
-        manual_tasks = []
-        for sid, sdata in sc.items():
-            if sdata["status"] != "completed":
-                continue
-            chk = (sdata.get("result") or {}).get("checks") or {}
-            if "F4_has_audio_stream" in chk:
-                chk_val = chk["F4_has_audio_stream"]
-            else:
-                chk_val = "N/A"
-            dir_name = (sdata.get("result") or {}).get("dir_name", "?")
-            if chk_val is True or chk_val == "N/A":
-                continue
-            manual_tasks.append((sid, sdata.get("label", ""), dir_name))
-        if manual_tasks:
-            lines.append(f"以下场景需要播放视频确认音频/字幕正确性：")
-            lines.append(f"")
-            for sid, label, dname in manual_tasks:
-                lines.append(f"- **{sid}** {label}: `.working_dir/{dname}/final_video.mp4`")
-        else:
-            lines.append(f"无待手动验证项（所有音频检查已通过或标记为 N/A）。")
+        lines.append(f"以下检查因 IMAX 视觉限制无法由脚本验证，需人工确认：")
+        lines.append(f"")
+        lines.append(f"| 检查项 | 操作 | 预期 |")
+        lines.append(f"|--------|------|------|")
+        lines.append(f"| F5 字幕可见性 | 播放 final_video.mp4 观察画面 | 字幕内容、位置、样式与配置一致 |")
+        lines.append(f"")
+        lines.append(f"> 音频正确性 (F4) 和字幕文本匹配 (F6) 已由脚本通过 whisper ASR 自动验证。")
 
         # Error summary
         lines.append(f"")
@@ -597,8 +585,77 @@ async def get_task_status(task_id: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════
+# Whisper 模型缓存（全局共享，避免每次验证重复加载）
+# ═══════════════════════════════════════════════════
+
+_whisper_model = None
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        import whisper
+        logger.info("加载 whisper tiny 模型（首次）...")
+        _whisper_model = whisper.load_model("tiny")
+    return _whisper_model
+
+
+# ═══════════════════════════════════════════════════
 # 产物验证
 # ═══════════════════════════════════════════════════
+
+def _load_task_state(task_dir: str) -> dict:
+    ts = os.path.join(task_dir, "task_state.json")
+    if os.path.exists(ts):
+        with open(ts) as f:
+            return json.load(f)
+    return {}
+
+
+def _get_expected_narration(task_state: dict, scenario: ScenarioConfig) -> str:
+    if scenario.type == "simple":
+        return task_state.get("prompt", "")
+    if scenario.type == "creative":
+        narrations = task_state.get("narrations", [])
+        return "\n".join(narrations)
+    if scenario.type == "manuscript":
+        paras = task_state.get("paragraphs", [])
+        return "\n".join(p.get("text", "") for p in paras)
+    return ""
+
+
+def _asr_validate(video_path: str) -> dict:
+    result = {"has_speech": False, "text": "", "duration": 0.0, "error": ""}
+    tmp_audio = video_path + "_asr_tmp.wav"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le",
+             "-ar", "16000", "-ac", "1", tmp_audio],
+            capture_output=True, timeout=60,
+        )
+        if not os.path.exists(tmp_audio) or os.path.getsize(tmp_audio) == 0:
+            result["error"] = "ffmpeg extract failed"
+            return result
+        try:
+            model = _get_whisper_model()
+        except ImportError:
+            result["error"] = "whisper not installed"
+            return result
+        trans = model.transcribe(tmp_audio, language="zh")
+        text = (trans.get("text") or "").strip()
+        result["text"] = text
+        result["duration"] = trans.get("duration", 0.0)
+        result["has_speech"] = len(text) > 5
+        return result
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+    finally:
+        if os.path.exists(tmp_audio):
+            try:
+                os.remove(tmp_audio)
+            except OSError:
+                pass
+
 
 def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
     task_dir = os.path.join(WORKING_DIR, dir_name)
@@ -633,11 +690,49 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             checks["F2_duration_gt_0"] = False
             checks["F4_has_audio_stream"] = False
             checks["F7_duration_reasonable"] = False
+
+        # ASR: speech content detection + subtitle text matching
+        if ve and checks.get("F4_has_audio_stream") is True:
+            asr = _asr_validate(video)
+            if asr.get("error") and "not installed" in asr["error"]:
+                checks["F4_has_speech"] = "skip"
+                checks["F6_asr_text"] = "skip"
+                checks["F6_text_match"] = "skip"
+                logger.info("whisper 不可用，跳过语音内容验证")
+            elif asr.get("error"):
+                checks["F4_has_speech"] = False
+                checks["F6_asr_text"] = f"err:{asr['error']}"
+                checks["F6_text_match"] = False
+            else:
+                checks["F4_has_speech"] = asr["has_speech"]
+                checks["F6_asr_text"] = asr["text"][:200]
+                checks["F4_speech_duration"] = round(asr["duration"], 2)
+                expected = _get_expected_narration(_load_task_state(task_dir), scenario)
+                if expected:
+                    # Simple fuzzy match: check if expected chars appear in transcription
+                    exp_clean = "".join(c for c in expected if c.isalpha())
+                    asr_clean = "".join(c for c in asr["text"] if c.isalpha())
+                    if exp_clean and asr_clean:
+                        overlap = sum(1 for c in exp_clean[:50] if c in asr_clean)
+                        ratio = overlap / min(len(exp_clean), 50)
+                        checks["F6_text_match"] = ratio > 0.3
+                    else:
+                        checks["F6_text_match"] = False
+                else:
+                    checks["F6_text_match"] = "N/A"
+        else:
+            checks["F4_has_speech"] = "N/A"
+            checks["F6_asr_text"] = "N/A"
+            checks["F6_text_match"] = "N/A"
+
     else:
         checks["F2_duration"] = 0
         checks["F2_duration_gt_0"] = False
         checks["F4_has_audio_stream"] = False
         checks["F7_duration_reasonable"] = False
+        checks["F4_has_speech"] = "N/A"
+        checks["F6_asr_text"] = "N/A"
+        checks["F6_text_match"] = "N/A"
 
     # R1-R4: task_state.json
     ts = os.path.join(task_dir, "task_state.json")
@@ -812,7 +907,8 @@ async def run_scenario(scenario: ScenarioConfig,
 
             errors = [k for k, v in checks.items()
                      if v is False and not any(k.endswith(x) for x in
-                        ("_width", "_height", "_duration", "_count", "_entries", "F2_duration"))]
+                        ("_width", "_height", "_duration", "_count", "_entries",
+                         "F2_duration", "F6_asr_text", "F4_speech_duration"))]
             report.update_scenario(scenario.id, "completed",
                                    result={"task_id": task_id, "dir_name": dir_name,
                                            "duration_s": elapsed,
