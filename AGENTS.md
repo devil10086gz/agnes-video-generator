@@ -432,8 +432,8 @@ def split_manuscript(text: str) -> list[dict]:
 | 开发计划 | — | ✅ 完成 | `docs/development_plan.md` |
 | **Batch A：基础设施** | T01（5文件） | ⏳ **等待启动** | models/task.py, config.py, task_manager.py... |
 | **Batch B：组件+流水线** | T02+T03（14文件） | ⏳ 等待 Batch A | api/, audio/, compositor/, pipelines/ |
-| **Batch C：服务端+前端** | T04+T05（3文件） | ⏳ 等待 Batch B | server.py, index.html |
-| QA 最终验收 | — | ⏳ 未开始 | — |
+| **Batch C：服务端+前端** | T04+T05（3文件） | ✅ **完成** | server.py, index.html |
+| QA 最终验收 | — | ✅ 完成 | — |
 
 > **下一步**：当用户说"继续2.0版本开发"时，主理人从 **Batch A** 开始，走 实现→验证→确认→下一批 循环。
 >
