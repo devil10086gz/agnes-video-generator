@@ -1,8 +1,11 @@
 """core.audio.subtitle — SRT 字幕生成 + moviepy 叠加
 
 将 edge_tts SubMaker cues 转换为 SRT 格式，并通过 moviepy SubtitlesClip 叠加到视频。
+
+v2.1: 支持细粒度字幕分割，避免 5 秒视频只有 1 条字幕的问题。
 """
 
+import datetime
 import logging
 import os
 from typing import List, Optional, Tuple
@@ -14,6 +17,15 @@ from moviepy.video.tools.subtitles import SubtitlesClip
 from models.task import SubtitleStyle
 
 logger = logging.getLogger(__name__)
+
+# ── 细粒度字幕分割参数 ──
+# 每条字幕最大持续时长（秒）
+_MAX_SUB_DURATION = 2.5
+# 每条字幕最大字符数（中文场景）
+_MAX_SUB_CHARS = 18
+# 最少字数字幕阈值：如果词级 cues 太少（如只有 3 个 cues for 14s），
+# 说明 edge_tts 本身提供的粒度已足够，不需要额外细化（避免空洞字幕）
+_MIN_WORD_CUES_FOR_FINE = 6
 
 
 class SubtitleGenerator:
@@ -29,14 +41,141 @@ class SubtitleGenerator:
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
     @staticmethod
-    def cues_to_srt(cues: list, output_path: str) -> str:
-        """将 edge_tts SubMaker cues 转换为 SRT 文件。
+    def _cue_total_seconds(td) -> float:
+        """将 timedelta 转为秒数（兼容 srt.Subtitle 的 start/end 字段）。"""
+        if isinstance(td, datetime.timedelta):
+            return td.total_seconds()
+        return float(td)
 
-        edge_tts SubMaker 的 generate_subs() 方法返回 WebVTT 格式字符串，
-        这里将其解析并转为标准 SRT 格式。
+    @staticmethod
+    def _generate_fine_srt_from_word_cues(
+        word_cues: list,
+        max_duration: float = _MAX_SUB_DURATION,
+        max_chars: int = _MAX_SUB_CHARS,
+    ) -> str:
+        """从词级 cues 生成细粒度 SRT。
+
+        将 edge_tts SubMaker.cues（词级时间戳列表）分组为短字幕段落，
+        每组不超过 max_duration 秒和 max_chars 字符，优先在较长停顿处断开。
 
         Args:
-            cues: edge_tts SubMaker 实例（调用 generate_subs()）
+            word_cues: edge_tts SubMaker.cues 列表（srt.Subtitle 对象）
+            max_duration: 每条字幕最大持续时长（秒）
+            max_chars: 每条字幕最大字符数
+
+        Returns:
+            SRT 格式字符串
+        """
+        if not word_cues:
+            return ""
+
+        # 将 cues 转为 (start_s, end_s, text) 三元组
+        items = []
+        for cue in word_cues:
+            start_s = SubtitleGenerator._cue_total_seconds(cue.start)
+            end_s = SubtitleGenerator._cue_total_seconds(cue.end)
+            text = cue.content.strip()
+            if text:
+                items.append((start_s, end_s, text))
+
+        if not items:
+            return ""
+
+        # 计算词间停顿（gap），用于决定在哪里断开字幕组
+        gaps = []
+        for i in range(1, len(items)):
+            gap = items[i][0] - items[i - 1][1]
+            gaps.append(max(gap, 0.0))
+
+        # 贪心分组：按 max_duration 和 max_chars 约束
+        groups = []
+        group_start_s = items[0][0]
+        group_end_s = items[0][1]
+        group_text_parts = [items[0][2]]
+        group_chars = len(items[0][2])
+
+        for i in range(1, len(items)):
+            s_s, e_s, txt = items[i]
+            gap = gaps[i - 1]
+
+            prospective_dur = e_s - group_start_s
+            prospective_chars = group_chars + len(txt)
+
+            # 决定是否断开：满足任一条件则断开
+            # 1. 持续时长超限
+            # 2. 字符数超限
+            # 3. 前一个词之间有较大停顿（>0.4s），且当前组已积累了一些内容
+            should_break = (
+                prospective_dur > max_duration
+                or prospective_chars > max_chars
+                or (gap > 0.4 and group_chars > 4 and len(items) > 8)
+            )
+
+            if should_break and group_text_parts:
+                groups.append((group_start_s, group_end_s, "".join(group_text_parts)))
+                group_start_s = s_s
+                group_end_s = e_s
+                group_text_parts = [txt]
+                group_chars = len(txt)
+            else:
+                group_end_s = e_s
+                group_text_parts.append(txt)
+                group_chars += len(txt)
+
+        # 最后剩余组
+        if group_text_parts:
+            groups.append((group_start_s, group_end_s, "".join(group_text_parts)))
+
+        # 后处理：合并过短的尾部组
+        # 只在合并后不会导致前一组过长时才合并
+        while len(groups) >= 2:
+            last_dur = groups[-1][1] - groups[-1][0]
+            last_chars = len(groups[-1][2])
+            prev_dur = groups[-2][1] - groups[-2][0]
+            prev_chars = len(groups[-2][2])
+            merged_dur = groups[-1][1] - groups[-2][0]
+            merged_chars = prev_chars + last_chars
+            # 条件：尾部太短 且 合并后不超限
+            if (last_dur < 0.8
+                    and merged_dur <= max_duration * 1.2
+                    and merged_chars <= max_chars * 1.5):
+                merged_start = groups[-2][0]
+                merged_end = groups[-1][1]
+                merged_text = groups[-2][2] + groups[-1][2]
+                groups[-2] = (merged_start, merged_end, merged_text)
+                groups.pop()
+            else:
+                break
+
+        # 生成 SRT
+        entries = []
+        for idx, (s_s, e_s, txt) in enumerate(groups, 1):
+            # 确保每组至少 0.3 秒
+            if e_s - s_s < 0.3:
+                e_s = s_s + 0.3
+            # 确保字幕之间不重叠（end 不超过下一个 start）
+            if idx < len(groups):
+                next_start = groups[idx][0]
+                if e_s > next_start:
+                    e_s = next_start - 0.05
+
+            start_time = SubtitleGenerator.cue_to_srt_time(s_s)
+            end_time = SubtitleGenerator.cue_to_srt_time(e_s)
+            entries.append(f"{idx}\n{start_time} --> {end_time}\n{txt}\n")
+
+        return "\n".join(entries)
+
+    @staticmethod
+    def cues_to_srt(cues, output_path: str) -> str:
+        """将 edge_tts SubMaker cues 转换为 SRT 文件。
+
+        优先使用词级 cues（edge_tts 7.x 的 SubMaker.cues）进行细粒度分割，
+        确保每 2-3 秒至少有一条字幕，避免出现 5 秒视频只有 1 条字幕的问题。
+
+        对于 edge_tts 6.x，回退到 WebVTT 解析方式。
+
+        Args:
+            cues: edge_tts SubMaker 实例或空 dict
             output_path: SRT 文件输出路径
 
         Returns:
@@ -46,24 +185,64 @@ class SubtitleGenerator:
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-        # edge_tts 6.x: SubMaker.generate_subs() 返回 WebVTT
-        # edge_tts 7.x: SubMaker.get_srt() 返回 SRT 字符串
-        if hasattr(cues, "get_srt"):
-            srt_content = cues.get_srt()
-            subtitles_count = srt_content.count("\n\n") + 1 if srt_content.strip() else 0
-        elif hasattr(cues, "generate_subs"):
-            vtt_content = cues.generate_subs()
-            subtitles = SubtitleGenerator._parse_vtt_to_srt(vtt_content)
-            srt_content = srt.compose(subtitles)
-            subtitles_count = len(subtitles)
-        else:
-            srt_content = ""
-            subtitles_count = 0
+        srt_content = ""
+        subtitles_count = 0
+        used_fine_grained = False
+
+        # ── 策略 1: 使用词级 cues 做细粒度 SRT（推荐）──
+        # edge_tts 7.x 的 SubMaker.cues 包含 WordBoundary 词级时间戳
+        raw_word_cues = getattr(cues, "cues", None)
+        if raw_word_cues and isinstance(raw_word_cues, list) and len(raw_word_cues) >= _MIN_WORD_CUES_FOR_FINE:
+            try:
+                srt_content = SubtitleGenerator._generate_fine_srt_from_word_cues(raw_word_cues)
+                if srt_content.strip():
+                    subtitles_count = srt_content.count("\n\n") + 1 if "\n\n" in srt_content else (
+                        1 if srt_content.strip() else 0
+                    )
+                    used_fine_grained = True
+                    logger.info(f"[Subtitle] Fine-grained SRT generated from {len(raw_word_cues)} word cues")
+            except Exception as e:
+                logger.warning(f"[Subtitle] Fine-grained SRT generation failed: {e}, falling back")
+
+        # ── 策略 2: 回退到 edge_tts 默认 SRT 生成 ──
+        if not srt_content.strip():
+            try:
+                if hasattr(cues, "get_srt"):
+                    srt_content = cues.get_srt()
+                    subtitles_count = srt_content.count("\n\n") + 1 if srt_content.strip() else 0
+                elif hasattr(cues, "generate_subs"):
+                    vtt_content = cues.generate_subs()
+                    subtitles = SubtitleGenerator._parse_vtt_to_srt(vtt_content)
+                    srt_content = srt.compose(subtitles)
+                    subtitles_count = len(subtitles)
+                else:
+                    subtitles_count = 0
+            except Exception as e:
+                # edge_tts 7.x + 某些 srt 库版本的 Subtitle 对象结构不兼容
+                # (proprietary 字段冲突)，回退到手动从 raw_cues 构造 SRT
+                logger.warning(f"[Subtitle] Default SRT generation failed: {e}, "
+                               f"falling back to raw cues")
+                if raw_word_cues and isinstance(raw_word_cues, list) and len(raw_word_cues) > 0:
+                    try:
+                        srt_content = SubtitleGenerator._generate_fine_srt_from_word_cues(
+                            raw_word_cues,
+                            max_duration=10.0,  # 放宽限制，因为这是最后的手段
+                            max_chars=60,
+                        )
+                        if srt_content.strip():
+                            subtitles_count = srt_content.count("\n\n") + 1 if "\n\n" in srt_content else 1
+                            logger.info(f"[Subtitle] Fallback SRT from raw cues: {subtitles_count} entries")
+                    except Exception as e2:
+                        logger.error(f"[Subtitle] Raw cues fallback also failed: {e2}")
+                        subtitles_count = 0
+                else:
+                    subtitles_count = 0
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(srt_content)
 
-        logger.info(f"[Subtitle] SRT saved: {output_path} ({subtitles_count} entries)")
+        method_tag = "fine-grained" if used_fine_grained else "default"
+        logger.info(f"[Subtitle] SRT saved: {output_path} ({subtitles_count} entries, {method_tag})")
         return output_path
 
     @staticmethod

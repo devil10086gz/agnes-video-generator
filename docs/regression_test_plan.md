@@ -401,11 +401,174 @@ python scripts/regression_runner.py --resume
 3. 检查该目录下是否有 `character_reference.png` 或 `scene_0/end_frame.png`
 4. 在测试 API 调用时，将素材路径作为 `reference_image` 或 `end_frame_image` 参数传入
 
-如果 `.working_dir` 中没有合适素材，可以自行准备任意图片文件（PNG/JPG 均可）。
+如果 `.working_dir` 中没有合适素材，可以自行准备任意图片文件（PNG/JPG 均可），
+或使用以下命令自动生成测试素材：
+
+```bash
+# 自动生成测试用的参考图和尾帧图（使用 Python 纯色填充）
+python -c "
+from PIL import Image
+for name, color in [('test_ref.png', (100,150,200)), ('test_end.png', (200,150,100))]:
+    img = Image.new('RGB', (768, 1152), color)
+    img.save(name)
+    print(f'{name} created')
+"
+```
 
 ---
 
-## 八、附录：回归测试脚本
+## 八、工具依赖与问题排查
+
+回归脚本依赖以下外部工具，如果不可用会影响对应的验证项：
+
+### 8.1 依赖工具清单
+
+| 工具 | 用途 | 影响的验证项 | 缺失时的行为 |
+|------|------|-------------|-------------|
+| `ffmpeg` | 音频提取、视频元数据 | F4 (ASR), F2/F3 (时长/分辨率) | 自动跳过 ASR 验证；moviepy 可替代元数据读取 |
+| `moviepy` | 视频元数据读取 | F2/F3/F4/F7 | 相关检查标记为 `skip` |
+| `whisper` (openai-whisper) | 语音识别 (ASR) | F4 (语音内容), F6 (字幕文本匹配) | 相关检查标记为 `skip` |
+| `requests` | HTTP API 调用 | 全部场景 | 脚本无法运行（应已包含在 requirements.txt） |
+| `PIL/Pillow` | 测试素材自动生成 | 仅素材准备阶段 | 需手动准备 test_ref.png/test_end.png |
+
+### 8.2 Whisper 安装与问题排查
+
+Whisper 用于自动验证音频轨道中的语音内容是否与输入原文匹配。如果 whisper 不可用：
+
+#### macOS 安装
+
+```bash
+# 在项目 venv 中安装
+.venv/bin/pip install openai-whisper
+
+# 如果安装失败，可能需要先安装 ffmpeg
+brew install ffmpeg
+
+# 验证安装
+.venv/bin/python -c "import whisper; print(whisper.load_model('tiny'))"
+```
+
+#### 常见问题
+
+**Q: `whisper` 模型加载 OOM (内存不足)？**
+- 脚本默认使用 `tiny` 模型（~75MB），内存需求低
+- 如果仍 OOM，可修改 `scripts/regression_runner.py` 中 `_get_whisper_model()` 的模型名
+- 或者跳过 ASR 验证：whisper 不可用时自动标记为 `skip`，不影响其他检查
+
+**Q: `librosa` 或 `numba` 依赖冲突？**
+- openai-whisper 依赖可能与其他包冲突，建议在独立 venv 中安装
+
+**Q: 中文识别效果差？**
+- tiny 模型对中文的识别精度有限，模糊匹配阈值（字符重叠率 > 30%）已考虑此限制
+- 如需更高精度，可升级为 `base` 或 `small` 模型
+
+**Q: 如何跳过 ASR 验证？**
+- 不安装 whisper 即可 — 脚本自动检测并跳过，不影响其他检查
+
+### 8.3 FFmpeg 安装
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Linux (Ubuntu/Debian)
+sudo apt install ffmpeg
+
+# 验证
+ffmpeg -version
+```
+
+### 8.4 执行前健康检查
+
+建议在首次执行回归前运行以下命令确认环境就绪：
+
+```bash
+# 检查 Python 依赖
+.venv/bin/python -c "
+deps = ['fastapi', 'moviepy', 'edge_tts', 'srt', 'requests', 'pydantic']
+for d in deps:
+    try:
+        __import__(d.replace('-','_'))
+        print(f'  [OK] {d}')
+    except ImportError:
+        print(f'  [MISS] {d}')
+"
+
+# 检查外部工具
+for cmd in ffmpeg; do
+    if command -v $cmd &>/dev/null; then
+        echo "  [OK] $cmd"
+    else
+        echo "  [MISS] $cmd"
+    fi
+done
+
+# 检查 whisper (可选)
+.venv/bin/python -c "import whisper; print('  [OK] whisper')" 2>/dev/null || echo "  [SKIP] whisper (ASR 验证将跳过)"
+
+# 检查测试素材
+for f in test_ref.png test_end.png; do
+    if [ -f "$f" ]; then echo "  [OK] $f"; else echo "  [MISS] $f (需要运行素材生成脚本)"; fi
+done
+```
+
+---
+
+## 九、回归流程自迭代机制
+
+回归流程本身也是一个需要持续优化的"活文档"。每次执行回归时，应当：
+
+### 9.1 执行时的问题记录
+
+在执行回归测试过程中，如果遇到以下类型的问题，**不要绕过，应当记录并修复**：
+
+| 问题类型 | 示例 | 处理方式 |
+|---------|------|---------|
+| 工具缺失/版本不兼容 | whisper 未安装、ffmpeg 版本过低 | 尝试安装/升级，如不可行则更新文档说明 |
+| 验证误报 | 某检查项被判失败，但实际功能正常 | 分析根因，修复验证逻辑（本次执行中修复） |
+| 验证漏报 | 某功能有 bug 但未被检查覆盖 | 添加新的检查项到验证清单 |
+| 脚本自身 bug | 并发执行时偶发崩溃、报告写入不完整 | 修复脚本，测试后合并 |
+| 文档与代码不一致 | 文档描述的场景参数与实际提交的不符 | 更新场景定义或文档 |
+| 超时不合理 | 某类任务实际耗时远超 timeout 设定 | 调整超时值 |
+
+### 9.2 迭代流程
+
+```
+执行回归
+    │
+    ├── 工具问题? → 尝试修复 → 如不可行，记录到文档
+    │
+    ├── 验证误报? → 分析根因 → 修复验证逻辑 → 重新运行
+    │
+    ├── 验证漏报? → 添加检查项 → 更新验证清单
+    │
+    ├── 脚本 bug? → 修复 → 测试 → 提交
+    │
+    └── 完成 → 更新执行记录表
+```
+
+### 9.3 每次回归后的检查清单
+
+- [ ] 所有验证项的结果是否与预期一致？不一致的项是否已分析原因？
+- [ ] 是否有新的工具依赖需要记录？
+- [ ] 场景超时设置是否合理？（实际耗时 vs 设定超时的比例是否在 30%-80% 之间？）
+- [ ] 加权信号量配置是否仍合理？（可根据实际 API 调用量调整权重和上限）
+- [ ] 是否有 C2/C3 类"因缺少测试素材而失败"的场景需要补充素材？
+- [ ] 字幕条目数是否合理？（对于 14s 稿件视频，预期 > 4 条字幕）
+
+### 9.4 验证逻辑修改原则
+
+修改 `scripts/regression_runner.py` 中的验证逻辑时，遵循以下原则：
+
+1. **只修正确认有问题的地方**：如果一个检查失败但功能实际正常 → 修验证逻辑；如果功能确实有问题 → 修业务代码
+2. **区分"跳过"和"失败"**：工具不可用标记 `skip`，功能异常标记 `False`
+3. **区分"N/A"和"失败"**：不适用场景标记 `N/A`，功能异常标记 `False`
+4. **向后兼容**：修改验证逻辑不应导致已有的通过报告变失败
+5. **记录修改原因**：每次修改后在回归计划文档的执行记录表中备注
+
+---
+
+## 十、附录：回归测试脚本
 
 回归测试自动化脚本位于 `scripts/regression_runner.py`，包含：
 
@@ -433,7 +596,7 @@ MAX_WEIGHT = AGNES_RATE_LIMIT / 2 = 10  (留 50% 余量)
 
 ---
 
-## 九、回归测试执行记录
+## 十一、回归测试执行记录
 
 每次执行回归测试后，输出两个报告文件：
 

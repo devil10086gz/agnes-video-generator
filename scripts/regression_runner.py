@@ -485,6 +485,32 @@ class ReportManager:
 
 
 # ═══════════════════════════════════════════════════
+# 测试素材自动生成
+# ═══════════════════════════════════════════════════
+
+def _ensure_test_assets():
+    """确保测试素材存在，不存在则自动生成。"""
+    assets = {
+        TEST_REF_IMAGE: (("test_ref.png", (100, 150, 200)),),
+        TEST_END_IMAGE: (("test_end.png", (200, 150, 100)),),
+    }
+    for path, specs in assets.items():
+        if os.path.exists(path):
+            continue
+        try:
+            from PIL import Image
+            for name, color in specs:
+                img = Image.new("RGB", (768, 1152), color)
+                save_path = path
+                img.save(save_path)
+                logger.info(f"自动生成测试素材: {save_path}")
+                break
+        except ImportError:
+            logger.warning(f"PIL 不可用，无法自动生成 {path}，请手动准备")
+            break
+
+
+# ═══════════════════════════════════════════════════
 # 服务管理
 # ═══════════════════════════════════════════════════
 
@@ -661,6 +687,35 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
     task_dir = os.path.join(WORKING_DIR, dir_name)
     checks: dict[str, Any] = {}
 
+    # 防御：任务目录不存在（如 C2/C3 因缺素材而失败）
+    if not os.path.isdir(task_dir):
+        checks["F1_final_video_exists"] = False
+        checks["F1_final_video_nonempty"] = False
+        checks["F2_duration"] = 0
+        checks["F2_duration_gt_0"] = False
+        checks["F4_has_audio_stream"] = False
+        checks["F7_duration_reasonable"] = False
+        checks["F4_has_speech"] = "N/A"
+        checks["F6_asr_text"] = "N/A"
+        checks["F6_text_match"] = "N/A"
+        checks["R1_task_state_valid"] = False
+        checks["R2_task_type"] = None
+        checks["R2_task_type_matches"] = False
+        checks["R3_step_count"] = 0
+        checks["R3_all_completed"] = False
+        checks["R4_final_path_exists"] = False
+        checks["R5_task_json"] = False
+        checks["R5_has_video_id"] = False
+        checks["R6_curl_sh"] = False
+        checks["R6_has_video_id_in_curl"] = False
+        checks["R7_sub_dirs_exist"] = "N/A"
+        checks["R7_audio_files"] = "N/A"
+        checks["R8_subtitle_srt"] = "N/A"
+        checks["R9_full_narration"] = "N/A"
+        checks["R10_full_subtitle"] = "N/A"
+        checks["R10_srt_entries"] = "N/A"
+        return checks
+
     video = os.path.join(task_dir, "final_video.mp4")
     ve = os.path.exists(video)
     checks["F1_final_video_exists"] = ve
@@ -747,9 +802,22 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R1_task_state_valid"] = True
         checks["R2_task_type"] = sd.get("task_type", "?")
         checks["R2_task_type_matches"] = sd.get("task_type") == scenario.type
+
+        # R3: step completion — skip mode-specific steps that are intentionally not run
         steps = {k: v for k, v in sd.items() if k.startswith("step_")}
         checks["R3_step_count"] = len(steps)
-        checks["R3_all_completed"] = all(v == "completed" for v in steps.values()) if steps else "N/A"
+
+        # 对于非 keyframes 模式的创意任务，end_frame_prompts/end_frame_generation
+        # 步骤不会被触发，不应计入"未完成"
+        chaining_mode = sd.get("chaining_mode", "none")
+        _SKIPPABLE_STEPS = set()
+        if scenario.type == "creative" and chaining_mode not in ("keyframes",):
+            _SKIPPABLE_STEPS = {"step_end_frame_prompts", "step_end_frame_generation"}
+
+        active_steps = {k: v for k, v in steps.items() if k not in _SKIPPABLE_STEPS}
+        checks["R3_all_completed"] = (
+            all(v == "completed" for v in active_steps.values()) if active_steps else "N/A"
+        )
         fvf = sd.get("final_video_file", "")
         checks["R4_final_path_exists"] = bool(fvf and os.path.exists(fvf))
     else:
@@ -760,27 +828,81 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R3_all_completed"] = False
         checks["R4_final_path_exists"] = False
 
-    # R5: task.json
-    tj = os.path.join(task_dir, "task.json")
-    checks["R5_task_json"] = os.path.exists(tj)
-    checks["R5_has_video_id"] = False
-    if os.path.exists(tj):
+    # R5: task.json — 创意任务在 scene_N/ 子目录，稿件任务在 para_N/ 子目录
+    # 简单视频任务在根目录
+    _task_json_found = False
+    _has_video_id = False
+    _curl_found = False
+    _curl_has_video_id = False
+
+    # 检查根目录（简单视频）
+    tj_root = os.path.join(task_dir, "task.json")
+    cs_root = os.path.join(task_dir, "curl.sh")
+    if os.path.exists(tj_root):
+        _task_json_found = True
         try:
-            with open(tj) as f:
+            with open(tj_root) as f:
                 tjd = json.load(f)
-            checks["R5_has_video_id"] = bool(tjd.get("video_id") or tjd.get("id"))
+            _has_video_id = bool(tjd.get("video_id") or tjd.get("id"))
         except Exception:
             pass
+    if os.path.exists(cs_root):
+        _curl_found = True
+        with open(cs_root) as f:
+            _curl_has_video_id = "video_id=" in f.read()
 
-    # R6: curl.sh
-    cs = os.path.join(task_dir, "curl.sh")
-    checks["R6_curl_sh"] = os.path.exists(cs)
-    checks["R6_has_video_id_in_curl"] = False
-    if os.path.exists(cs):
-        with open(cs) as f:
-            checks["R6_has_video_id_in_curl"] = "video_id=" in f.read()
+    # 对于创意/稿件任务，额外检查子目录
+    if scenario.type == "creative":
+        for entry in os.listdir(task_dir) if os.path.isdir(task_dir) else []:
+            if entry.startswith("scene_"):
+                sd_path = os.path.join(task_dir, entry)
+                if os.path.isdir(sd_path):
+                    tj_sub = os.path.join(sd_path, "task.json")
+                    cs_sub = os.path.join(sd_path, "curl.sh")
+                    if os.path.exists(tj_sub):
+                        _task_json_found = True
+                        if not _has_video_id:
+                            try:
+                                with open(tj_sub) as f:
+                                    tjd = json.load(f)
+                                _has_video_id = bool(tjd.get("video_id") or tjd.get("id"))
+                            except Exception:
+                                pass
+                    if os.path.exists(cs_sub):
+                        _curl_found = True
+                        if not _curl_has_video_id:
+                            with open(cs_sub) as f:
+                                _curl_has_video_id = "video_id=" in f.read()
+    elif scenario.type == "manuscript":
+        for entry in os.listdir(task_dir) if os.path.isdir(task_dir) else []:
+            if entry.startswith("para_"):
+                sd_path = os.path.join(task_dir, entry)
+                if os.path.isdir(sd_path):
+                    tj_sub = os.path.join(sd_path, "task.json")
+                    cs_sub = os.path.join(sd_path, "curl.sh")
+                    if os.path.exists(tj_sub):
+                        _task_json_found = True
+                        if not _has_video_id:
+                            try:
+                                with open(tj_sub) as f:
+                                    tjd = json.load(f)
+                                _has_video_id = bool(tjd.get("video_id") or tjd.get("id"))
+                            except Exception:
+                                pass
+                    if os.path.exists(cs_sub):
+                        _curl_found = True
+                        if not _curl_has_video_id:
+                            with open(cs_sub) as f:
+                                _curl_has_video_id = "video_id=" in f.read()
+
+    checks["R5_task_json"] = _task_json_found
+    checks["R5_has_video_id"] = _has_video_id
+    checks["R6_curl_sh"] = _curl_found
+    checks["R6_has_video_id_in_curl"] = _curl_has_video_id
 
     # R7-R8: 子目录 + 音频/字幕（创意/稿件）
+    # 判断是否需要音频验证：检查 audio_enabled 参数
+    audio_enabled = scenario.params.get("audio_enabled", True)
     if scenario.type in ("creative", "manuscript"):
         prefix = "scene_" if scenario.type == "creative" else "para_"
         dirs_exist = any(
@@ -789,15 +911,21 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         ) if os.path.isdir(task_dir) else False
         checks["R7_sub_dirs_exist"] = dirs_exist
 
-        audio_found = srt_found = False
-        for root, _dirs, files in os.walk(task_dir):
-            for fn in files:
-                if fn in ("narration.mp3", "full_narration.mp3", "narration.wav"):
-                    audio_found = True
-                if fn.endswith(".srt"):
-                    srt_found = True
-        checks["R7_audio_files"] = audio_found
-        checks["R8_subtitle_srt"] = srt_found
+        if audio_enabled:
+            audio_found = srt_found = False
+            for root, _dirs, files in os.walk(task_dir):
+                for fn in files:
+                    if fn in ("narration.mp3", "full_narration.mp3", "narration.wav",
+                              "combined_narration.mp3"):
+                        audio_found = True
+                    if fn.endswith(".srt"):
+                        srt_found = True
+            checks["R7_audio_files"] = audio_found
+            checks["R8_subtitle_srt"] = srt_found
+        else:
+            # 无配音场景：音频/字幕检查标记为 N/A
+            checks["R7_audio_files"] = "N/A"
+            checks["R8_subtitle_srt"] = "N/A"
     else:
         checks["R7_sub_dirs_exist"] = "N/A"
         checks["R7_audio_files"] = "N/A"
@@ -809,10 +937,12 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R9_full_narration"] = os.path.exists(fn9) and os.path.getsize(fn9) > 0
         fn10 = os.path.join(task_dir, "full_subtitle.srt")
         checks["R10_full_subtitle"] = os.path.exists(fn10)
-        if os.path.exists(fn10):
+        if audio_enabled and os.path.exists(fn10):
             with open(fn10) as f:
                 srt_content = f.read()
             checks["R10_srt_entries"] = srt_content.count("\n\n") + 1 if "\n\n" in srt_content else 1
+        elif not audio_enabled:
+            checks["R10_srt_entries"] = "N/A"
         else:
             checks["R10_srt_entries"] = 0
     else:
@@ -1052,6 +1182,9 @@ async def main(resume: bool = False, auto_start: bool = False, quick: bool = Fal
     resume and logger.info(f"  模式: 恢复 (自动跳过已完成场景)")
     quick and logger.info(f"  模式: 快速验证 (跳过运行)")
     logger.info("=" * 56)
+
+    # 确保测试素材存在
+    _ensure_test_assets()
 
     if not await ensure_server(auto_start):
         logger.error("服务不可用，退出")
