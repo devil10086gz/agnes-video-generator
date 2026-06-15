@@ -76,7 +76,9 @@
 - Python 3.10+
 - ffmpeg（视频拼接和音频处理用）
 
-### 一键启动
+### 方式 A：手动部署
+
+**第一步 — 克隆 & 启动**
 
 ```bash
 git clone https://github.com/your-org/agnes-video-generator.git
@@ -84,9 +86,7 @@ cd agnes-video-generator
 ./start.sh
 ```
 
-脚本会自动创建虚拟环境、安装依赖，并在浏览器中打开 `http://localhost:8765`。
-
-### 手动启动
+脚本会自动创建虚拟环境、安装依赖，并在浏览器中打开 `http://localhost:8765`。也可以手动启动：
 
 ```bash
 python3 -m venv .venv
@@ -94,21 +94,42 @@ python3 -m venv .venv
 .venv/bin/python server.py
 ```
 
-然后访问 `http://localhost:8765`。
+**第二步 — 配置 API Key**
 
-### AI Agent 辅助部署
-
-本项目专为 AI 编程助手（Claude、Cursor、QoderWork 等）友好设计。只需告诉你的 AI Agent：
-
-> "克隆 agnes-video-generator 项目并启动它。"
-
-Agent 会执行 `./start.sh`，自动完成虚拟环境创建、依赖安装和服务启动，全程无需手动干预。首次配置 API Key 时，Agent 也可以通过环境变量完成：
+前往 [Agnes AI](https://platform.agnes-ai.com) 获取免费 API Key，然后二选一：
 
 ```bash
+# 方式 1：环境变量
 export AGNES_API_KEY="your-api-key"
+
+# 方式 2：通过 API 设置（等同于在 Web UI 中填写）
+curl -X POST http://localhost:8765/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "your-api-key"}'
 ```
 
-如果项目目录下已有 `AGENTS.md` 文件，AI Agent 可以阅读它来获取完整的项目知识、部署流程和验证步骤。
+**第三步 — 创建第一个视频**
+
+打开 `http://localhost:8765`，选择视频模式（简单 / 创意 / 稿件），输入创意描述，点击"开始生成视频"。
+
+### 方式 B：AI Agent 辅助部署
+
+本项目专为 AI 编程助手（Claude、Cursor、QoderWork 等）友好设计。先由你下载代码并准备好 API Key：
+
+```bash
+git clone https://github.com/your-org/agnes-video-generator.git
+cd agnes-video-generator
+```
+
+然后告诉你的 Agent：
+
+> "阅读这个项目的 AGENTS.md，安装依赖，配置 API Key `<your-key>`，然后启动服务。"
+
+Agent 会读取 `AGENTS.md`（一份完整的部署指引），自动完成：环境检查（Python 3.10+、ffmpeg）、`pip install`、服务启动和 API Key 写入。启动后还可以让 Agent 验证部署：
+
+> "跑一下部署验证检查。"
+
+Agent 会按 `AGENTS.md` 中的四层验证清单（连通性 → 静态分析 → 端点测试 → 字幕功能）逐项执行并汇报结果。
 
 ## 📖 使用说明
 
@@ -160,6 +181,8 @@ AI 驱动的多场景故事视频：
 | 分辨率 | 竖屏 / 横屏 / 方形 | - |
 | 旁白配音 | 语音角色和语速 | - |
 | 字幕样式 | 完整的字幕自定义选项 | - |
+
+> **提示**：每段视频的时长由程序根据文本长度自动计算（约 4 字/秒，每段 5–12 秒），无需手动设置。
 
 ### 3. 点击"开始生成视频"
 

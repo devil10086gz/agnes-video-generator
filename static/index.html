@@ -353,24 +353,13 @@
           <p class="text-xs text-gray-500 mt-1"><span data-i18n="charCount">字数</span>: <span id="m_char_count">0</span></p>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label class="block text-sm text-gray-400 mb-1.5" data-i18n="resolution">分辨率</label>
-            <select id="m_resolution" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-purple-500 transition">
-              <option value="768x1152" data-i18n="resPortrait">竖屏 9:16</option>
-              <option value="1152x768" data-i18n="resLandscape">横屏 16:9</option>
-              <option value="1024x1024" data-i18n="resSquare">方形 1:1</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm text-gray-400 mb-1.5" data-i18n="durationPerSegment">每段时长</label>
-            <select id="m_duration" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-purple-500 transition">
-              <option value="5">5s</option>
-              <option value="8">8s</option>
-              <option value="10" selected>10s</option>
-              <option value="12">12s</option>
-            </select>
-          </div>
+        <div class="mb-4">
+          <label class="block text-sm text-gray-400 mb-1.5" data-i18n="resolution">分辨率</label>
+          <select id="m_resolution" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-purple-500 transition">
+            <option value="768x1152" data-i18n="resPortrait">竖屏 9:16</option>
+            <option value="1152x768" data-i18n="resLandscape">横屏 16:9</option>
+            <option value="1024x1024" data-i18n="resSquare">方形 1:1</option>
+          </select>
         </div>
       </div>
 
@@ -521,7 +510,7 @@ const T = {
     subtitleStyle: '字幕样式', subFont: '字体', subColor: '颜色', subSize: '字号', subPosition: '位置', posBottom: '底部', posTop: '顶部',
     subStrokeColor: '描边色', subStrokeWidth: '描边宽', subBgColor: '背景色',
     manuscriptText: '稿件正文', manuscriptPlaceholder: '粘贴你的文章、新闻稿、公众号文章等...',
-    charCount: '字数', durationPerSegment: '每段时长',
+    charCount: '字数',
     startGenerate: '开始生成视频', submitting: '提交中...', taskRunning: '任务进行中...',
     loading: '加载中...', noTasks: '暂无任务', loadFailed: '加载失败',
     progress: '生成进度', stopTask: '中断任务',
@@ -579,7 +568,7 @@ const T = {
     subtitleStyle: 'Subtitle Style', subFont: 'Font', subColor: 'Color', subSize: 'Size', subPosition: 'Position', posBottom: 'Bottom', posTop: 'Top',
     subStrokeColor: 'Stroke Color', subStrokeWidth: 'Stroke Width', subBgColor: 'BG Color',
     manuscriptText: 'Article Text', manuscriptPlaceholder: 'Paste your article, news, blog post...',
-    charCount: 'Characters', durationPerSegment: 'Duration per segment',
+    charCount: 'Characters',
     startGenerate: 'Start Generating', submitting: 'Submitting...', taskRunning: 'Task in progress...',
     loading: 'Loading...', noTasks: 'No tasks', loadFailed: 'Load failed',
     progress: 'Progress', stopTask: 'Stop Task',
@@ -634,7 +623,7 @@ const T = {
     subtitleStyle: 'Субтитры', subFont: 'Шрифт', subColor: 'Цвет', subSize: 'Размер', subPosition: 'Позиция', posBottom: 'Низ', posTop: 'Верх',
     subStrokeColor: 'Цвет обводки', subStrokeWidth: 'Ширина обводки', subBgColor: 'Цвет фона',
     manuscriptText: 'Текст статьи', manuscriptPlaceholder: 'Вставьте статью...',
-    charCount: 'Символов', durationPerSegment: 'Длительность сегмента',
+    charCount: 'Символов',
     startGenerate: 'Начать генерацию', submitting: 'Отправка...', taskRunning: 'Выполняется...',
     loading: 'Загрузка...', noTasks: 'Нет задач', loadFailed: 'Ошибка загрузки',
     progress: 'Прогресс', stopTask: 'Остановить',
@@ -687,7 +676,7 @@ const T = {
     subtitleStyle: '字幕', subFont: 'フォント', subColor: '色', subSize: 'サイズ', subPosition: '位置', posBottom: '下', posTop: '上',
     subStrokeColor: '縁取り色', subStrokeWidth: '縁取り幅', subBgColor: '背景色',
     manuscriptText: '記事テキスト', manuscriptPlaceholder: '記事を貼り付け...',
-    charCount: '文字数', durationPerSegment: 'セグメント長さ',
+    charCount: '文字数',
     startGenerate: '生成開始', submitting: '送信中...', taskRunning: '実行中...',
     loading: '読込中...', noTasks: 'タスクなし', loadFailed: '読込失敗',
     progress: '進捗', stopTask: '中断',
@@ -737,7 +726,7 @@ const T = {
     subtitleStyle: '자막', subFont: '폰트', subColor: '색상', subSize: '크기', subPosition: '위치', posBottom: '하단', posTop: '상단',
     subStrokeColor: '테두리 색', subStrokeWidth: '테두리 두께', subBgColor: '배경 색',
     manuscriptText: '기사 텍스트', manuscriptPlaceholder: '기사를 붙여넣기...',
-    charCount: '글자 수', durationPerSegment: '세그먼트 길이',
+    charCount: '글자 수',
     startGenerate: '생성 시작', submitting: '제출 중...', taskRunning: '실행 중...',
     loading: '로딩...', noTasks: '작업 없음', loadFailed: '로딩 실패',
     progress: '진행', stopTask: '중단',
@@ -787,7 +776,7 @@ const T = {
     subtitleStyle: 'Sarikata', subFont: 'Fon', subColor: 'Warna', subSize: 'Saiz', subPosition: 'Kedudukan', posBottom: 'Bawah', posTop: 'Atas',
     subStrokeColor: 'Warna Garis', subStrokeWidth: 'Lebar Garis', subBgColor: 'Warna Latar',
     manuscriptText: 'Teks Artikel', manuscriptPlaceholder: 'Tampal artikel anda...',
-    charCount: 'Aksara', durationPerSegment: 'Tempoh segmen',
+    charCount: 'Aksara',
     startGenerate: 'Mula Hasilkan', submitting: 'Menghantar...', taskRunning: 'Berjalan...',
     loading: 'Memuat...', noTasks: 'Tiada tugas', loadFailed: 'Gagal memuat',
     progress: 'Kemajuan', stopTask: 'Henti',
@@ -837,7 +826,7 @@ const T = {
     subtitleStyle: 'Subtitle', subFont: 'Font', subColor: 'Warna', subSize: 'Ukuran', subPosition: 'Posisi', posBottom: 'Bawah', posTop: 'Atas',
     subStrokeColor: 'Warna Garis', subStrokeWidth: 'Lebar Garis', subBgColor: 'Warna Latar',
     manuscriptText: 'Teks Artikel', manuscriptPlaceholder: 'Tempel artikel Anda...',
-    charCount: 'Karakter', durationPerSegment: 'Durasi segmen',
+    charCount: 'Karakter',
     startGenerate: 'Mulai Hasilkan', submitting: 'Mengirim...', taskRunning: 'Berjalan...',
     loading: 'Memuat...', noTasks: 'Tidak ada tugas', loadFailed: 'Gagal memuat',
     progress: 'Kemajuan', stopTask: 'Hentikan',
@@ -1193,7 +1182,6 @@ async function submitManuscript() {
   const res = parseResolution(document.getElementById('m_resolution').value);
   form.append('video_width', res.width);
   form.append('video_height', res.height);
-  form.append('video_duration', document.getElementById('m_duration').value);
 
   // Audio config
   form.append('audio_enabled', document.getElementById('m_audio_enabled').checked);

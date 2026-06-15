@@ -76,7 +76,9 @@ One-click launch, operate entirely in the browser. Available in **7 languages**:
 - Python 3.10+
 - ffmpeg (for video concatenation and audio processing)
 
-### One-Click Launch
+### Option A: Manual Setup
+
+**Step 1 — Clone & Launch**
 
 ```bash
 git clone https://github.com/your-org/agnes-video-generator.git
@@ -84,9 +86,7 @@ cd agnes-video-generator
 ./start.sh
 ```
 
-The script automatically creates a virtual environment, installs dependencies, and opens `http://localhost:8765` in your browser.
-
-### Manual Launch
+The script automatically creates a virtual environment, installs dependencies, and opens `http://localhost:8765` in your browser. You can also start manually:
 
 ```bash
 python3 -m venv .venv
@@ -94,19 +94,42 @@ python3 -m venv .venv
 .venv/bin/python server.py
 ```
 
-Then visit `http://localhost:8765`.
+**Step 2 — Configure API Key**
 
-### AI Agent Assisted Setup
-
-This project is designed to be easily set up by AI coding assistants (Claude, Cursor, QoderWork, etc.). Simply ask your AI agent:
-
-> "Clone the agnes-video-generator project and start it for me."
-
-The agent can run `./start.sh` to handle the full setup — virtual environment creation, dependency installation, and server launch — with no manual intervention needed. For first-time API key configuration, the agent can also set it via:
+Get a free API key from [Agnes AI](https://platform.agnes-ai.com), then choose one of two ways:
 
 ```bash
+# Way 1: Environment variable
 export AGNES_API_KEY="your-api-key"
+
+# Way 2: Via API (same as entering it in the Web UI)
+curl -X POST http://localhost:8765/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"api_key": "your-api-key"}'
 ```
+
+**Step 3 — Create Your First Video**
+
+Open `http://localhost:8765`, choose a video mode (Simple / Creative / Manuscript), enter your idea, and click "Start Generating".
+
+### Option B: AI Agent Assisted Setup
+
+This project is designed for easy deployment by AI coding assistants (Claude, Cursor, QoderWork, etc.). First, download the code and prepare your API key:
+
+```bash
+git clone https://github.com/your-org/agnes-video-generator.git
+cd agnes-video-generator
+```
+
+Then tell your agent:
+
+> "Read the AGENTS.md in this project, install dependencies, configure the API key `<your-key>`, and start the server."
+
+The agent will read `AGENTS.md` — a comprehensive deployment guide — and handle: environment checks (Python 3.10+, ffmpeg), `pip install`, server launch, and API key configuration. After startup, you can also ask the agent to verify the deployment:
+
+> "Run the deployment verification checks."
+
+The agent will execute the 4-layer checklist from `AGENTS.md` (connectivity → static analysis → endpoint testing → subtitle feature) and report results.
 
 ## 📖 Usage
 
@@ -158,6 +181,8 @@ Long-form text to narrated video:
 | Resolution | Portrait / Landscape / Square | - |
 | Narration | Voice role and speech rate | - |
 | Subtitle Style | Full subtitle customization | - |
+
+> **Note**: Segment duration is auto-calculated based on text length (~4 chars/sec, 5–12s per segment) — no manual setting needed.
 
 ### 3. Click "Start Generating"
 
