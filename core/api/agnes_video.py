@@ -148,7 +148,7 @@ class AgnesVideoAPI:
         if d in DURATION_PRESETS:
             return DURATION_PRESETS[d]
         best = None
-        for nf in range(9, 442, 8):
+        for nf in range(9, 410, 8):
             fr = round(nf / d)
             if 1 <= fr <= 60:
                 best = (nf, fr)
