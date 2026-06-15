@@ -486,16 +486,32 @@ class ManuscriptVideoPipeline(BasePipeline):
                     "[Manuscript] video: paragraph %d estimated duration %.1fs (chars=%d)",
                     para.index, para_duration, len(para.text),
                 )
-                video_id = await self.video_api.submit_video(
-                    prompt=para.scene_prompt,
-                    duration=para_duration,
-                    width=self._state.video_width,
-                    height=self._state.video_height,
-                )
 
-                para.video_id = video_id
-                self._save_para_task(para_dir, video_id)
-                saved_video_id = video_id
+                # Retry loop for submit + wait: up to 3 attempts per paragraph
+                _PARA_MAX_RETRIES = 3
+                for retry in range(_PARA_MAX_RETRIES):
+                    try:
+                        video_id = await self.video_api.submit_video(
+                            prompt=para.scene_prompt,
+                            duration=para_duration,
+                            width=self._state.video_width,
+                            height=self._state.video_height,
+                        )
+                        para.video_id = video_id
+                        self._save_para_task(para_dir, video_id)
+                        saved_video_id = video_id
+                        break
+                    except Exception as e:
+                        if retry < _PARA_MAX_RETRIES - 1:
+                            delay = 15 * (retry + 1)
+                            logger.warning(
+                                "[Manuscript] video: paragraph %d submit failed "
+                                "(%s), retry %d/%d in %ds...",
+                                para.index, e, retry + 1, _PARA_MAX_RETRIES, delay,
+                            )
+                            await asyncio.sleep(delay)
+                        else:
+                            raise
 
             await self._emit(
                 "video_gen", "running",
@@ -503,8 +519,24 @@ class ManuscriptVideoPipeline(BasePipeline):
                 0.15 + 0.45 * (i / max(total, 1)),
             )
 
-            video_output = await self.video_api.wait_for_video(saved_video_id)
-            video_output.save(video_path)
+            # Retry loop for polling/waiting: up to 3 attempts
+            _WAIT_MAX_RETRIES = 3
+            for retry in range(_WAIT_MAX_RETRIES):
+                try:
+                    video_output = await self.video_api.wait_for_video(saved_video_id)
+                    video_output.save(video_path)
+                    break
+                except Exception as e:
+                    if retry < _WAIT_MAX_RETRIES - 1:
+                        delay = 20 * (retry + 1)
+                        logger.warning(
+                            "[Manuscript] video: paragraph %d wait failed "
+                            "(%s), retry %d/%d in %ds...",
+                            para.index, e, retry + 1, _WAIT_MAX_RETRIES, delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
 
             para.video_file = video_path
             # Persist after each video for crash recovery.

@@ -20,8 +20,8 @@ DURATION_PRESETS = {
     5: (121, 24),
     10: (241, 24),
     15: (361, 24),
-    18: (441, 24),
-    20: (441, 22),
+    18: (409, 24),   # capped at 409 (API max for 720p); actual ~17s
+    20: (409, 24),   # capped at 409 (API max for 720p); actual ~17s
 }
 
 
@@ -143,12 +143,40 @@ class AgnesVideoAPI:
                     await asyncio.sleep(15)
         return None
 
-    def _get_frame_config(self, duration: Optional[int] = None) -> tuple:
+    # API frame limits by resolution tier (from Agnes API error messages)
+    _FRAME_LIMITS = {
+        "1080p": 169,
+        "720p": 409,
+        "480p": 961,
+    }
+
+    @staticmethod
+    def _get_max_frames(width: int, height: int) -> int:
+        """Get the maximum allowed num_frames for the given resolution."""
+        pixels = width * height
+        if pixels > 1280 * 720:
+            return 169   # 1080p tier
+        elif pixels > 854 * 480:
+            return 409   # 720p tier
+        else:
+            return 961   # 480p tier
+
+    def _get_frame_config(self, duration: Optional[int] = None,
+                          width: int = 1152, height: int = 768) -> tuple:
         d = duration or self.default_duration
+        max_nf = self._get_max_frames(width, height)
         if d in DURATION_PRESETS:
-            return DURATION_PRESETS[d]
+            nf, fr = DURATION_PRESETS[d]
+            if nf <= max_nf:
+                return nf, fr
+            # preset exceeds limit for this resolution, cap it
+            logger.warning(
+                f"[AgnesVideo] Duration preset {d}s has {nf} frames, "
+                f"exceeds {max_nf} for {width}x{height}. Capping."
+            )
+            return max_nf, fr
         best = None
-        for nf in range(9, 410, 8):
+        for nf in range(9, min(410, max_nf + 1), 8):
             fr = round(nf / d)
             if 1 <= fr <= 60:
                 best = (nf, fr)
@@ -198,6 +226,7 @@ class AgnesVideoAPI:
             await asyncio.sleep(interval)
 
     async def _submit_with_retry(self, payload: dict, mode_desc: str) -> str:
+        frame_reductions_left = 2  # allow up to 2 frame-count reductions on 400
         for attempt in range(self.max_retries):
             if self.shutdown_event and self.shutdown_event.is_set():
                 raise RuntimeError("Video generation cancelled by user")
@@ -235,9 +264,24 @@ class AgnesVideoAPI:
                     await asyncio.sleep(delay)
                     continue
 
-                error_detail = resp.text[:500]
-                logger.error(f"[AgnesVideo] HTTP {resp.status_code}: {error_detail}")
-                raise RuntimeError(f"Agnes video submit failed (HTTP {resp.status_code}): {error_detail}")
+                # HTTP 400 with num_frames exceeded → reduce frames and retry
+                error_text = resp.text[:500]
+                if (resp.status_code == 400
+                        and "num_frames" in error_text
+                        and frame_reductions_left > 0):
+                    old_nf = payload.get("num_frames", 0)
+                    new_nf = max(int(old_nf * 0.7), 49)
+                    logger.warning(
+                        f"[AgnesVideo] 400 num_frames error ({old_nf} frames), "
+                        f"reducing to {new_nf} and retrying "
+                        f"({frame_reductions_left} reductions left)..."
+                    )
+                    payload["num_frames"] = new_nf
+                    frame_reductions_left -= 1
+                    continue
+
+                logger.error(f"[AgnesVideo] HTTP {resp.status_code}: {error_text}")
+                raise RuntimeError(f"Agnes video submit failed (HTTP {resp.status_code}): {error_text}")
 
             except requests.exceptions.Timeout:
                 delay = self.retry_base_delay * (attempt + 1)
@@ -287,7 +331,7 @@ class AgnesVideoAPI:
         negative_prompt: Optional[str] = None,
         **kwargs,
     ) -> str:
-        num_frames, frame_rate = self._get_frame_config(duration)
+        num_frames, frame_rate = self._get_frame_config(duration, width, height)
 
         payload: dict = {
             "model": self.model,
