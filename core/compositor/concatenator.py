@@ -8,6 +8,8 @@ import os
 import shutil
 from typing import List, Optional, Tuple
 
+import re as _re
+
 import srt as srt_lib
 from moviepy import AudioFileClip, CompositeVideoClip, VideoFileClip, concatenate_videoclips
 
@@ -48,8 +50,16 @@ class VideoConcatenator:
             return output_path
 
         clips = [VideoFileClip(p) for p in video_paths]
+        # L7: 统一缩放到第一个视频的分辨率，避免 compose 模式 pad 黑边
+        target_w, target_h = clips[0].w, clips[0].h
+        resized_clips = []
+        for c in clips:
+            if c.w != target_w or c.h != target_h:
+                resized_clips.append(c.resized((target_w, target_h)))
+            else:
+                resized_clips.append(c)
         try:
-            final = concatenate_videoclips(clips, method="compose")
+            final = concatenate_videoclips(resized_clips, method="compose")
             final.write_videofile(
                 output_path,
                 codec="libx264",
@@ -60,7 +70,7 @@ class VideoConcatenator:
                 logger="bar",
             )
         finally:
-            for c in clips:
+            for c in resized_clips:
                 c.close()
 
         logger.info(f"[Compositor] Concatenation complete: {output_path}")
@@ -94,9 +104,19 @@ class VideoConcatenator:
 
         for i, (video_path, audio_path, srt_path) in enumerate(clip_tuples):
             segment_output = video_path.replace(".mp4", "_synth.mp4")
-            if os.path.exists(segment_output):
-                synthesized_paths.append(segment_output)
-                continue
+            if os.path.exists(segment_output) and os.path.getsize(segment_output) > 0:
+                # Validate cached _synth file has valid duration
+                try:
+                    probe = VideoFileClip(segment_output)
+                    if probe.duration and probe.duration > 0:
+                        probe.close()
+                        logger.info(f"[Compositor] Reusing valid cached _synth: {segment_output}")
+                        synthesized_paths.append(segment_output)
+                        continue
+                    probe.close()
+                    logger.warning(f"[Compositor] Cached _synth has invalid duration, rebuilding: {segment_output}")
+                except Exception as e:
+                    logger.warning(f"[Compositor] Cached _synth validation failed, rebuilding: {segment_output} ({e})")
 
             synthesized = VideoConcatenator._synthesize_single(
                 video_path, audio_path, srt_path, segment_output, subtitle_style
@@ -109,16 +129,38 @@ class VideoConcatenator:
         else:
             VideoConcatenator.concat_videos(synthesized_paths, output_path)
 
+        # 清理 _synth 中间文件
+        for sp in synthesized_paths:
+            if sp.endswith("_synth.mp4") and os.path.exists(sp):
+                try:
+                    os.remove(sp)
+                except OSError:
+                    pass
+
         logger.info(f"[Compositor] concat_with_audio complete: {output_path}")
         return output_path
 
     @staticmethod
-    def _resolve_subtitle_position(pos, default=("center", "bottom")) -> tuple:
-        """将字幕位置配置归一化为 (horizontal, vertical) 元组。"""
+    def _resolve_subtitle_position(pos, default=("center", "bottom"), video_height: int = 0) -> tuple:
+        """将字幕位置配置归一化为 (horizontal, vertical) 元组。
+
+        支持 "bottom-N" / "top+N" 格式（N 为像素偏移），
+        返回 moviepy 可用的位置元组。
+        """
         if isinstance(pos, (list, tuple)) and len(pos) == 2:
             h, v = pos[0], pos[1]
             if isinstance(v, str):
                 v_lower = v.strip().lower()
+                # 解析 "bottom-N" 格式
+                m_bottom = _re.match(r'^bottom\s*[-–]\s*(\d+)$', v_lower)
+                if m_bottom and video_height > 0:
+                    offset = int(m_bottom.group(1))
+                    return (h, max(video_height - offset, 0))
+                # 解析 "top+N" 格式
+                m_top = _re.match(r'^top\s*\+\s*(\d+)$', v_lower)
+                if m_top:
+                    offset = int(m_top.group(1))
+                    return (h, offset)
                 if "top" in v_lower:
                     return (h, "top")
                 if "bottom" in v_lower:
@@ -126,6 +168,14 @@ class VideoConcatenator:
             return (h, v)
         if isinstance(pos, str):
             pos_lower = pos.strip().lower()
+            m_bottom = _re.match(r'^bottom\s*[-–]\s*(\d+)$', pos_lower)
+            if m_bottom and video_height > 0:
+                offset = int(m_bottom.group(1))
+                return ("center", max(video_height - offset, 0))
+            m_top = _re.match(r'^top\s*\+\s*(\d+)$', pos_lower)
+            if m_top:
+                offset = int(m_top.group(1))
+                return ("center", offset)
             position_map = {
                 "bottom": ("center", "bottom"),
                 "top": ("center", "top"),
@@ -140,6 +190,8 @@ class VideoConcatenator:
         srt_path: str,
         subtitle_style: SubtitleStyle,
         video_width: int,
+        video_height: int = 0,
+        video_duration: float = 0.0,
     ) -> list:
         """逐条解析 SRT，返回 TextClip 列表（支持多行自动换行）。"""
         from moviepy import TextClip as MpTextClip
@@ -185,13 +237,22 @@ class VideoConcatenator:
                     size=(available_w, None),
                     text_align="center",
                 )
+                # M10: 钳位字幕结束时间不超过视频时长
+                if video_duration > 0:
+                    end_s = min(end_s, video_duration - 0.01)
+                    if end_s <= start_s:
+                        continue
+                    dur = end_s - start_s
+
                 clip = (
                     clip.with_start(start_s)
                     .with_end(end_s)
                     .with_duration(dur)
                 )
                 clip = clip.with_position(
-                    VideoConcatenator._resolve_subtitle_position(subtitle_style.position)
+                    VideoConcatenator._resolve_subtitle_position(
+                        subtitle_style.position, video_height=video_height
+                    )
                 )
                 subs_clips.append(clip)
         return subs_clips
@@ -241,8 +302,8 @@ class VideoConcatenator:
             video_clip = VideoFileClip(naked_path)
             audio_clip = AudioFileClip(audio_path)
 
-            # ── Step 2.5: 提升音频音量（TTS 默认音量偏低）────────────────
-            _AUDIO_VOLUME_FACTOR = 2.5
+            # ── Step 2.5: 提升音频音量（M9: 降为 1.5x 避免削波）────────
+            _AUDIO_VOLUME_FACTOR = 1.5
             audio_clip = audio_clip.with_volume_scaled(_AUDIO_VOLUME_FACTOR)
 
             # ── Step 3: 若音频比视频长，冻结尾帧补齐 ─────────────────────
@@ -261,6 +322,8 @@ class VideoConcatenator:
                 try:
                     subs_clips = VideoConcatenator._parse_srt_to_clips(
                         srt_path, subtitle_style, video_clip.w,
+                        video_height=video_clip.h,
+                        video_duration=video_clip.duration,
                     )
                     if subs_clips:
                         final = CompositeVideoClip([video_with_audio, *subs_clips])
@@ -353,8 +416,8 @@ class VideoConcatenator:
             video_clip = VideoFileClip(video_path)
             audio_clip = AudioFileClip(audio_path)
 
-            # 提升音频音量（TTS 默认音量偏低）
-            _AUDIO_VOLUME_FACTOR = 2.5
+            # 提升音频音量（M9: 降为 1.5x 避免削波）
+            _AUDIO_VOLUME_FACTOR = 1.5
             audio_clip = audio_clip.with_volume_scaled(_AUDIO_VOLUME_FACTOR)
 
             # 若音频比视频长，冻结最后一帧补齐
@@ -373,6 +436,8 @@ class VideoConcatenator:
                 try:
                     subs_clips = VideoConcatenator._parse_srt_to_clips(
                         srt_path, subtitle_style, video_clip.w,
+                        video_height=video_clip.h,
+                        video_duration=video_clip.duration,
                     )
                     if subs_clips:
                         final = CompositeVideoClip([video_with_audio, *subs_clips])

@@ -570,8 +570,8 @@ class CreativeVideoPipeline(BasePipeline):
                 with open(task_file, "r") as f:
                     data = json.load(f)
                 return data.get("video_id") or data.get("task_id")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Pipeline] Failed to load cached task.json for scene: {e}")
         return None
 
     async def _step_generate_videos(
@@ -1191,13 +1191,24 @@ class CreativeVideoPipeline(BasePipeline):
             SubtitleGenerator.cues_to_srt({}, combined_srt)
         elif audio_enabled:
             edge_tts = EdgeTTSEngine()
-            audio_path, sub_maker = await edge_tts.generate(
-                text=narration_text,
-                output_path=combined_audio,
-                voice=voice,
-                rate=rate,
-            )
-            SubtitleGenerator.cues_to_srt(sub_maker, combined_srt)
+            try:
+                audio_path, sub_maker = await edge_tts.generate(
+                    text=narration_text,
+                    output_path=combined_audio,
+                    voice=voice,
+                    rate=rate,
+                )
+                SubtitleGenerator.cues_to_srt(sub_maker, combined_srt)
+            except RuntimeError as e:
+                logger.warning(f"[Pipeline] EdgeTTS failed, falling back to silent: {e}")
+                total_duration = float(self._state.video_duration) * len(self._state.scenes)
+                silent_tts = SilentTTSEngine()
+                await silent_tts.generate(
+                    text=narration_text,
+                    output_path=combined_audio,
+                    duration_sec=total_duration,
+                )
+                SubtitleGenerator.cues_to_srt({}, combined_srt)
         else:
             total_duration = float(self._state.video_duration) * len(self._state.scenes)
             silent_tts = SilentTTSEngine()

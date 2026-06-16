@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import uuid
 from contextlib import asynccontextmanager
@@ -83,6 +84,7 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 
 active_connections: Dict[str, WebSocket] = {}
 active_pipelines: Dict[str, BasePipeline] = {}
+background_tasks: set = set()
 shutdown_event = asyncio.Event()
 
 
@@ -119,8 +121,8 @@ async def lifespan(app: FastAPI):
                         with open(task_file, "w") as f:
                             json.dump(data, f, ensure_ascii=False, indent=2)
                         logger.info(f"[Startup] Reset stale running task {name} -> pending")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[Startup] Failed to reset stale task {name}: {e}")
 
     yield
 
@@ -139,25 +141,20 @@ UPLOAD_DIR = os.path.join(get_working_dir(), "uploads")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
     await websocket.accept()
     logger.info(f"[WS] Client connected for task {task_id}")
-    active_connections[task_id] = websocket
 
-    async def progress_callback(step: str, status: str, message: str, progress: float, data: dict):
+    # 关闭并替换同一 task_id 的旧 WS 连接，避免覆盖竞态
+    old_ws = active_connections.get(task_id)
+    if old_ws is not None and old_ws is not websocket:
+        logger.info(f"[WS] Closing previous connection for task {task_id}")
         try:
-            await websocket.send_json({
-                "type": "progress",
-                "task_id": task_id,
-                "step": step,
-                "status": status,
-                "message": message,
-                "progress": progress,
-                "data": data,
-            })
-        except Exception:
-            pass
+            await old_ws.close(code=1000, reason="replaced by new connection")
+        except Exception as e:
+            logger.debug(f"[WS] Error closing old WS for {task_id}: {e}")
+    active_connections[task_id] = websocket
 
     if task_id in active_pipelines:
         logger.info(f"[WS] Binding existing pipeline for task {task_id}")
-        active_pipelines[task_id].progress_callback = progress_callback
+        active_pipelines[task_id].progress_callback = _make_progress_callback(task_id)
 
     try:
         while True:
@@ -169,7 +166,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     except Exception as e:
         logger.warning(f"[WS] Error for task {task_id}: {e}")
     finally:
-        if task_id in active_connections:
+        # 仅当当前 WS 仍是活跃连接时才删除，避免误删已替换的新连接
+        if active_connections.get(task_id) is websocket:
             del active_connections[task_id]
 
 
@@ -291,7 +289,7 @@ async def serve_video(task_id: str):
 
 
 def _parse_duration(user_requirement: str) -> int:
-    match = re.search(r'(?:每个场景|每段|每节|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
+    match = re.search(r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
     if match:
         return int(match.group(1))
     match = re.search(r'(\d+)\s*(?:秒|s)\s*(?:每|/)', user_requirement)
@@ -315,8 +313,8 @@ def _make_progress_callback(task_id: str, ws: Optional[WebSocket] = None):
                     "progress": progress,
                     "data": data,
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[WS] Failed to send progress for {task_id}: {e}")
     return progress_callback
 
 
@@ -366,6 +364,14 @@ async def _run_pipeline(pipeline: BasePipeline, state: BaseTaskState):
             del active_pipelines[pipeline.task_id]
 
 
+def _launch_background_task(coro):
+    """Launch a background task with a strong reference to prevent GC."""
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    return task
+
+
 # ═══════════════════════════════════════════════════
 # 任务创建端点 — 三种类型
 # ═══════════════════════════════════════════════════
@@ -410,16 +416,18 @@ async def create_simple_task(
         negative_prompt=negative_prompt,
     )
 
-    # 处理参考图上传
+    # 处理参考图上传（L4: 用 UUID 替代客户端文件名，避免路径穿越）
     if reference_image and reference_image.filename:
-        upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_ref_{reference_image.filename}")
+        ext = os.path.splitext(reference_image.filename)[1] or ".png"
+        upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_ref{ext}")
         with open(upload_path, "wb") as f:
             f.write(await reference_image.read())
         state.reference_image = upload_path
 
     # 处理尾帧图上传（keyframes 模式）
     if end_frame_image and end_frame_image.filename:
-        upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_end_{end_frame_image.filename}")
+        ext = os.path.splitext(end_frame_image.filename)[1] or ".png"
+        upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_end{ext}")
         with open(upload_path, "wb") as f:
             f.write(await end_frame_image.read())
         state.end_frame_image = upload_path
@@ -430,7 +438,7 @@ async def create_simple_task(
     if task_id in active_connections:
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     logger.info(f"[Simple] Task created: {task_id}, mode={mode}, duration={duration}s")
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
@@ -470,8 +478,12 @@ async def create_creative_task(
     name = creative_name.strip() if creative_name else f"video_{task_id}"
     dir_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_id}"
 
-    # 解析时长
+    # 解析时长：user_requirement 中显式提到时长时用它，否则用 video_duration 参数
     parsed_duration = _parse_duration(user_requirement)
+    req_has_explicit_duration = bool(re.search(r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
+                                     or re.search(r'(\d+)\s*(?:秒|s)\s*(?:每|/)', user_requirement))
+    if not req_has_explicit_duration and video_duration > 0:
+        parsed_duration = video_duration
 
     # 构建音频配置
     subtitle_style = SubtitleStyle(
@@ -507,9 +519,10 @@ async def create_creative_task(
 
     logger.info(f"[Pipeline] Parsed video_duration={parsed_duration}s from user_requirement={user_requirement!r}")
 
-    # 处理参考图上传
+    # 处理参考图上传（L4: 用 UUID 替代客户端文件名，避免路径穿越）
     if reference_image and reference_image.filename:
-        upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_ref_{reference_image.filename}")
+        ext = os.path.splitext(reference_image.filename)[1] or ".png"
+        upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_ref{ext}")
         with open(upload_path, "wb") as f:
             f.write(await reference_image.read())
         state.reference_image = upload_path
@@ -520,7 +533,7 @@ async def create_creative_task(
     if task_id in active_connections:
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
 
@@ -588,7 +601,7 @@ async def create_manuscript_task(
     if task_id in active_connections:
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     logger.info(f"[Manuscript] Task created: {task_id}, text_len={len(manuscript_text)}")
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
@@ -677,7 +690,7 @@ async def resume_task(task_id: str):
         logger.info(f"[Resume] Binding existing WebSocket for task {task_id}")
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
 
@@ -698,6 +711,100 @@ async def stop_task(task_id: str):
 
     logger.info(f"[Stop] Task {task_id} stop requested")
     return {"ok": True, "task_id": task_id}
+
+
+# ═══════════════════════════════════════════════════
+# 回归测试清理
+# ═══════════════════════════════════════════════════
+
+@app.post("/api/cleanup-regression")
+async def cleanup_regression():
+    """安全清理回归测试产物（报告、日志、任务目录）。
+
+    只删除产物清单中记录的内容，不影响用户原有任务数据。
+    """
+    working_dir = get_working_dir()
+    manifest_path = os.path.join(working_dir, ".regression_manifest.json")
+
+    if not os.path.exists(manifest_path):
+        raise HTTPException(
+            status_code=404,
+            detail="未找到回归测试产物清单，可能没有执行过回归测试")
+
+    try:
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"读取清单失败: {e}")
+
+    removed_dirs = 0
+    removed_files = 0
+    errors: list = []
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    upload_dir = os.path.join(working_dir, "uploads")
+
+    # 1. 清理任务目录
+    for dir_name in manifest.get("task_dirs", []):
+        dir_path = os.path.join(working_dir, dir_name)
+        if os.path.isdir(dir_path):
+            try:
+                shutil.rmtree(dir_path)
+                removed_dirs += 1
+            except OSError as e:
+                errors.append(f"删除目录失败 {dir_name}: {e}")
+
+    # 2. 清理上传文件
+    for fname in manifest.get("uploads", []):
+        fpath = os.path.join(upload_dir, fname)
+        if os.path.isfile(fpath):
+            try:
+                os.remove(fpath)
+                removed_files += 1
+            except OSError as e:
+                errors.append(f"删除上传文件失败 {fname}: {e}")
+
+    # 3. 清理报告文件
+    for rel_path in manifest.get("reports", []):
+        abs_path = os.path.join(project_root, rel_path)
+        if os.path.isfile(abs_path):
+            try:
+                os.remove(abs_path)
+                removed_files += 1
+            except OSError as e:
+                errors.append(f"删除报告失败 {rel_path}: {e}")
+
+    # 4. 清理服务器日志
+    log_rel = manifest.get("server_log", "")
+    if log_rel:
+        log_path = os.path.join(project_root, log_rel)
+        if os.path.isfile(log_path):
+            try:
+                os.remove(log_path)
+                removed_files += 1
+            except OSError as e:
+                errors.append(f"删除日志失败: {e}")
+
+    # 5. 清理清单本身
+    try:
+        os.remove(manifest_path)
+        removed_files += 1
+    except OSError as e:
+        errors.append(f"删除清单失败: {e}")
+
+    scenarios_cleaned = len(manifest.get("scenarios", {}))
+    logger.info(
+        f"[Cleanup] 回归清理完成: {removed_dirs} 目录, "
+        f"{removed_files} 文件, {scenarios_cleaned} 场景")
+
+    return {
+        "ok": len(errors) == 0,
+        "removed_dirs": removed_dirs,
+        "removed_files": removed_files,
+        "scenarios_cleaned": scenarios_cleaned,
+        "errors": errors,
+    }
 
 
 # ═══════════════════════════════════════════════════

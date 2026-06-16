@@ -422,8 +422,8 @@ class ManuscriptVideoPipeline(BasePipeline):
                 with open(task_file, "r") as f:
                     data = json.load(f)
                 return data.get("video_id") or data.get("task_id")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Manuscript] Failed to load cached task.json: {e}")
         return None
 
     async def _step_generate_videos(
@@ -608,12 +608,19 @@ class ManuscriptVideoPipeline(BasePipeline):
         )
 
         if audio_config.enabled:
-            audio_result, sub_maker = await edge_tts.generate(
-                text=full_text,
-                output_path=audio_path,
-                voice=audio_config.voice,
-                rate=audio_config.rate,
-            )
+            try:
+                audio_result, sub_maker = await edge_tts.generate(
+                    text=full_text,
+                    output_path=audio_path,
+                    voice=audio_config.voice,
+                    rate=audio_config.rate,
+                )
+            except RuntimeError as e:
+                logger.warning(f"[Manuscript] EdgeTTS failed, falling back to silent: {e}")
+                audio_result, sub_maker = await silent_tts.generate(
+                    text=full_text,
+                    output_path=audio_path,
+                )
         else:
             audio_result, sub_maker = await silent_tts.generate(
                 text=full_text,

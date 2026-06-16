@@ -81,8 +81,8 @@ class AgnesVideoAPI:
                     if cached_url:
                         logger.info(f"[AgnesVideo] Using cached hosted URL: {cached_url[:80]}...")
                         return cached_url
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[AgnesVideo] Failed to read cached URL: {e}")
             url = await self._upload_image_to_url(ref)
             if url:
                 try:
@@ -92,8 +92,8 @@ class AgnesVideoAPI:
                         f.flush()
                         os.fsync(f.fileno())
                     os.replace(tmp_file, url_file)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[AgnesVideo] Failed to cache URL: {e}")
                 return url
             logger.warning("[AgnesVideo] Image upload failed, falling back to base64.")
             return self._path_to_b64(ref)
@@ -182,30 +182,48 @@ class AgnesVideoAPI:
                 best = (nf, fr)
         return best or DURATION_PRESETS[5]
 
-    async def _poll_task(self, video_id: str, interval: int = 15, progress_callback=None) -> dict:
+    async def _poll_task(self, video_id: str, interval: int = 15,
+                          max_poll_duration: int = 1800,
+                          max_consecutive_failures: int = 10,
+                          progress_callback=None) -> dict:
         last_status = ""
         poll_count = 0
+        consecutive_failures = 0
+        start_time = asyncio.get_event_loop().time()
         curl_cmd = (
             f'curl -s -H "Authorization: Bearer $AGNES_API_KEY" '
             f'"{API_ROOT}/agnesapi?video_id={video_id}"'
         )
         while True:
+            # M2: 每次轮询前检查停止信号
             if self.shutdown_event and self.shutdown_event.is_set():
                 raise RuntimeError("Video generation cancelled by user")
+
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > max_poll_duration:
+                raise RuntimeError(
+                    f"[AgnesVideo] Polling timed out after {max_poll_duration}s for video {video_id[:16]}"
+                )
+
             try:
                 if poll_count % 10 == 0:
-                    logger.info(f"[AgnesVideo] Polling video {video_id[:16]}... (poll #{poll_count + 1})")
-                resp = await asyncio.to_thread(
-                    requests.get,
-                    f"{API_ROOT}/agnesapi?video_id={video_id}",
-                    headers=self.headers,
-                    timeout=15,
+                    logger.info(f"[AgnesVideo] Polling video {video_id[:16]}... (poll #{poll_count + 1}, elapsed {elapsed:.0f}s)")
+                # M2: 用 wait_for 包裹以支持取消
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        requests.get,
+                        f"{API_ROOT}/agnesapi?video_id={video_id}",
+                        headers=self.headers,
+                        timeout=15,
+                    ),
+                    timeout=30,
                 )
                 resp.raise_for_status()
                 result = resp.json()
                 status = result.get("status", "")
                 progress = result.get("progress", 0)
                 poll_count += 1
+                consecutive_failures = 0  # reset on success
 
                 if status != last_status:
                     logger.info(f"[AgnesVideo] Video {video_id[:16]}... status={status} progress={progress}%")
@@ -220,8 +238,15 @@ class AgnesVideoAPI:
                 if status in ("failed", "FAILED"):
                     err = result.get("error") or "unknown error"
                     raise RuntimeError(f"Video generation failed: {err}")
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"[AgnesVideo] Poll error: {e}")
+            except (requests.exceptions.RequestException, asyncio.TimeoutError) as e:
+                consecutive_failures += 1
+                logger.warning(
+                    f"[AgnesVideo] Poll error ({consecutive_failures}/{max_consecutive_failures}): {e}"
+                )
+                if consecutive_failures >= max_consecutive_failures:
+                    raise RuntimeError(
+                        f"[AgnesVideo] Polling failed after {max_consecutive_failures} consecutive errors for video {video_id[:16]}"
+                    )
 
             await asyncio.sleep(interval)
 
@@ -232,12 +257,16 @@ class AgnesVideoAPI:
                 raise RuntimeError("Video generation cancelled by user")
             try:
                 logger.info(f"[AgnesVideo] Submitting {mode_desc} (attempt {attempt + 1}/{self.max_retries})...")
-                resp = await asyncio.to_thread(
-                    requests.post,
-                    f"{BASE_URL}/videos",
-                    headers=self.headers,
-                    json=payload,
-                    timeout=(30, 180),
+                # M2: 缩短读超时从 180s 到 60s，使 stop() 更快生效
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        requests.post,
+                        f"{BASE_URL}/videos",
+                        headers=self.headers,
+                        json=payload,
+                        timeout=(15, 60),
+                    ),
+                    timeout=90,
                 )
 
                 if resp.status_code == 200:
@@ -283,7 +312,7 @@ class AgnesVideoAPI:
                 logger.error(f"[AgnesVideo] HTTP {resp.status_code}: {error_text}")
                 raise RuntimeError(f"Agnes video submit failed (HTTP {resp.status_code}): {error_text}")
 
-            except requests.exceptions.Timeout:
+            except (requests.exceptions.Timeout, asyncio.TimeoutError):
                 delay = self.retry_base_delay * (attempt + 1)
                 logger.warning(
                     f"[AgnesVideo] Timeout on {mode_desc}, "
