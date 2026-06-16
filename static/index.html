@@ -1620,6 +1620,7 @@ function setApiKeyConfiguredUI(source, canClear) {
   const clearBtn = document.getElementById('apikey-clear');
   const statusEl = document.getElementById('apikey-status');
 
+  input.dataset.i18nPlaceholder = 'apiKeyMasked';
   input.placeholder = t('apiKeyMasked');
   input.value = '';
   input.disabled = true;
@@ -1628,7 +1629,9 @@ function setApiKeyConfiguredUI(source, canClear) {
   saveBtn.disabled = true;
   saveBtn.classList.add('opacity-50', 'cursor-not-allowed');
 
-  statusEl.textContent = source === 'env' ? t('apiKeyFromEnv') : t('apiKeyConfigured');
+  const statusKey = source === 'env' ? 'apiKeyFromEnv' : 'apiKeyConfigured';
+  statusEl.dataset.i18n = statusKey;
+  statusEl.textContent = t(statusKey);
   statusEl.className = 'text-xs px-2 py-1 rounded-full bg-green-900 text-green-300';
 
   clearBtn.classList.remove('hidden');
@@ -1641,6 +1644,7 @@ function resetApiKeyUI() {
   const clearBtn = document.getElementById('apikey-clear');
   const statusEl = document.getElementById('apikey-status');
 
+  input.dataset.i18nPlaceholder = 'apiKeyPlaceholder';
   input.placeholder = t('apiKeyPlaceholder');
   input.value = '';
   input.disabled = false;
@@ -1649,6 +1653,7 @@ function resetApiKeyUI() {
   saveBtn.disabled = false;
   saveBtn.classList.remove('opacity-50', 'cursor-not-allowed');
 
+  statusEl.dataset.i18n = 'apiKeyNotConfigured';
   statusEl.textContent = t('apiKeyNotConfigured');
   statusEl.className = 'text-xs px-2 py-1 rounded-full bg-gray-800 text-gray-400';
 
