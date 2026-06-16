@@ -83,6 +83,7 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 
 active_connections: Dict[str, WebSocket] = {}
 active_pipelines: Dict[str, BasePipeline] = {}
+background_tasks: set = set()
 shutdown_event = asyncio.Event()
 
 
@@ -287,7 +288,7 @@ async def serve_video(task_id: str):
 
 
 def _parse_duration(user_requirement: str) -> int:
-    match = re.search(r'(?:每个场景|每段|每节|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
+    match = re.search(r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
     if match:
         return int(match.group(1))
     match = re.search(r'(\d+)\s*(?:秒|s)\s*(?:每|/)', user_requirement)
@@ -362,6 +363,14 @@ async def _run_pipeline(pipeline: BasePipeline, state: BaseTaskState):
             del active_pipelines[pipeline.task_id]
 
 
+def _launch_background_task(coro):
+    """Launch a background task with a strong reference to prevent GC."""
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    return task
+
+
 # ═══════════════════════════════════════════════════
 # 任务创建端点 — 三种类型
 # ═══════════════════════════════════════════════════
@@ -426,7 +435,7 @@ async def create_simple_task(
     if task_id in active_connections:
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     logger.info(f"[Simple] Task created: {task_id}, mode={mode}, duration={duration}s")
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
@@ -466,8 +475,12 @@ async def create_creative_task(
     name = creative_name.strip() if creative_name else f"video_{task_id}"
     dir_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_id}"
 
-    # 解析时长
+    # 解析时长：user_requirement 中显式提到时长时用它，否则用 video_duration 参数
     parsed_duration = _parse_duration(user_requirement)
+    req_has_explicit_duration = bool(re.search(r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
+                                     or re.search(r'(\d+)\s*(?:秒|s)\s*(?:每|/)', user_requirement))
+    if not req_has_explicit_duration and video_duration > 0:
+        parsed_duration = video_duration
 
     # 构建音频配置
     subtitle_style = SubtitleStyle(
@@ -516,7 +529,7 @@ async def create_creative_task(
     if task_id in active_connections:
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
 
@@ -584,7 +597,7 @@ async def create_manuscript_task(
     if task_id in active_connections:
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     logger.info(f"[Manuscript] Task created: {task_id}, text_len={len(manuscript_text)}")
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
@@ -673,7 +686,7 @@ async def resume_task(task_id: str):
         logger.info(f"[Resume] Binding existing WebSocket for task {task_id}")
         pipeline.progress_callback = _make_progress_callback(task_id)
 
-    asyncio.create_task(_run_pipeline(pipeline, state))
+    _launch_background_task(_run_pipeline(pipeline, state))
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
 

@@ -45,23 +45,46 @@ class EdgeTTSEngine(TTSEngine):
 
         Returns:
             (audio_path, sub_maker) 元组
+
+        Raises:
+            RuntimeError: TTS 生成失败时抛出，调用方应降级到 SilentTTSEngine。
         """
         logger.info(f"[TTS] Generating audio: voice={voice}, rate={rate}, text={len(text)} chars...")
 
-        communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
-        sub_maker = edge_tts.SubMaker()
-
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-        with open(output_path, "wb") as audio_file:
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_file.write(chunk["data"])
-                elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
-                    sub_maker.feed(chunk)
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            try:
+                communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
+                sub_maker = edge_tts.SubMaker()
 
-        logger.info(f"[TTS] Audio saved: {output_path}")
-        return output_path, sub_maker
+                tmp_path = output_path + ".tmp"
+                with open(tmp_path, "wb") as audio_file:
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            audio_file.write(chunk["data"])
+                        elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
+                            sub_maker.feed(chunk)
+
+                # 原子替换，避免半成品被误用
+                os.replace(tmp_path, output_path)
+                logger.info(f"[TTS] Audio saved: {output_path}")
+                return output_path, sub_maker
+            except Exception as e:
+                # 清理半成品文件
+                for p in (tmp_path, output_path):
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+                if attempt < max_attempts - 1:
+                    logger.warning(f"[TTS] edge_tts attempt {attempt + 1}/{max_attempts} failed: {e}, retrying...")
+                    await asyncio.sleep(3)
+                    continue
+                logger.error(f"[TTS] edge_tts failed after {max_attempts} attempts: {e}")
+                raise RuntimeError(f"EdgeTTS generation failed: {e}") from e
 
 
 class SilentTTSEngine(TTSEngine):

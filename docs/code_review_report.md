@@ -19,14 +19,14 @@
 | H3 | 高 | 前端存储型 XSS（innerHTML 未转义） | ✅ 已修复 |
 | H4 | 高 | task_state.json 非原子写，崩溃即损坏 | ✅ 已修复 |
 | H5 | 高 | WebSocket 连接覆盖竞态 + 进度回调失联 | ✅ 已修复 |
-| H6 | 高 | _synth 缓存不复验、从不清理 | ⬜ 待修复 |
+| H6 | 高 | _synth 缓存不复验、从不清理 | ✅ 已修复 |
 | M1 | 中 | 字幕默认位置 bottom-80 偏移被丢弃 | ⬜ 待修复 |
 | M2 | 中 | stop() 无法中断阻塞中的 requests | ⬜ 待修复 |
-| M3 | 中 | _poll_task 无总超时上限 | ⬜ 待修复 |
-| M4 | 中 | video_duration Form 参数被静默丢弃 | ⬜ 待修复 |
+| M3 | 中 | _poll_task 无总超时上限 | ✅ 已修复 |
+| M4 | 中 | video_duration Form 参数被静默丢弃 | ✅ 已修复 |
 | M5 | 中 | 大量 except Exception: pass 静默吞异常 | ✅ 已修复 |
-| M6 | 中 | asyncio.create_task 未持有引用 | ⬜ 待修复 |
-| M7 | 中 | EdgeTTS 无错误处理，抖动即任务失败 | ⬜ 待修复 |
+| M6 | 中 | asyncio.create_task 未持有引用 | ✅ 已修复 |
+| M7 | 中 | EdgeTTS 无错误处理，抖动即任务失败 | ✅ 已修复 |
 | M8 | 中 | regression_runner 参数与 server 不符 | ⬜ 待修复 |
 | M9 | 中 | 音量增益 2.5x 必然削波 | ⬜ 待修复 |
 | M10 | 中 | 字幕时间戳未按视频时长钳位 | ⬜ 待修复 |
@@ -217,4 +217,4 @@
 
 ---
 
-*报告版本：v1.1 | 最后更新：2026-06-16 | H1–H5、M5 已修复，其余待处理*
+*报告版本：v1.2 | 最后更新：2026-06-16 | H1–H6、M3–M7 已修复，其余待处理*

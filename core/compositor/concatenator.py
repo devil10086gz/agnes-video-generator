@@ -94,9 +94,19 @@ class VideoConcatenator:
 
         for i, (video_path, audio_path, srt_path) in enumerate(clip_tuples):
             segment_output = video_path.replace(".mp4", "_synth.mp4")
-            if os.path.exists(segment_output):
-                synthesized_paths.append(segment_output)
-                continue
+            if os.path.exists(segment_output) and os.path.getsize(segment_output) > 0:
+                # Validate cached _synth file has valid duration
+                try:
+                    probe = VideoFileClip(segment_output)
+                    if probe.duration and probe.duration > 0:
+                        probe.close()
+                        logger.info(f"[Compositor] Reusing valid cached _synth: {segment_output}")
+                        synthesized_paths.append(segment_output)
+                        continue
+                    probe.close()
+                    logger.warning(f"[Compositor] Cached _synth has invalid duration, rebuilding: {segment_output}")
+                except Exception as e:
+                    logger.warning(f"[Compositor] Cached _synth validation failed, rebuilding: {segment_output} ({e})")
 
             synthesized = VideoConcatenator._synthesize_single(
                 video_path, audio_path, srt_path, segment_output, subtitle_style
@@ -108,6 +118,14 @@ class VideoConcatenator:
             shutil.copy2(synthesized_paths[0], output_path)
         else:
             VideoConcatenator.concat_videos(synthesized_paths, output_path)
+
+        # 清理 _synth 中间文件
+        for sp in synthesized_paths:
+            if sp.endswith("_synth.mp4") and os.path.exists(sp):
+                try:
+                    os.remove(sp)
+                except OSError:
+                    pass
 
         logger.info(f"[Compositor] concat_with_audio complete: {output_path}")
         return output_path

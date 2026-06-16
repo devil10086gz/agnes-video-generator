@@ -608,12 +608,19 @@ class ManuscriptVideoPipeline(BasePipeline):
         )
 
         if audio_config.enabled:
-            audio_result, sub_maker = await edge_tts.generate(
-                text=full_text,
-                output_path=audio_path,
-                voice=audio_config.voice,
-                rate=audio_config.rate,
-            )
+            try:
+                audio_result, sub_maker = await edge_tts.generate(
+                    text=full_text,
+                    output_path=audio_path,
+                    voice=audio_config.voice,
+                    rate=audio_config.rate,
+                )
+            except RuntimeError as e:
+                logger.warning(f"[Manuscript] EdgeTTS failed, falling back to silent: {e}")
+                audio_result, sub_maker = await silent_tts.generate(
+                    text=full_text,
+                    output_path=audio_path,
+                )
         else:
             audio_result, sub_maker = await silent_tts.generate(
                 text=full_text,
