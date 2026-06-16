@@ -250,6 +250,9 @@ agnes-video-generator/
 │   ├── config.py                     # API Key 持久化、字体解析、音视频默认配置
 │   ├── task_manager.py               # 任务状态持久化，多态反序列化，向后兼容
 │   ├── screenwriter.py               # 编剧 Agent（故事/脚本/旁白/角色提取/尾帧 prompt）
+│   ├── pipeline.py                   # 通用 Pipeline 工具（早期版本，已由 pipelines/ 包取代）
+│   ├── image_generator.py            # 图片生成工具（早期版本，已由 api/agnes_image.py 取代）
+│   ├── video_generator.py            # 视频生成工具（早期版本，已由 api/agnes_video.py 取代）
 │   │
 │   ├── api/
 │   │   ├── __init__.py
@@ -292,6 +295,9 @@ agnes-video-generator/
 └── docs/
     ├── system_design.md              # 系统架构设计
     ├── regression_test_plan.md       # 大版本回归测试计划
+    ├── code_review_report.md         # 代码审查报告（v2.0）
+    ├── development_plan.md           # 开发计划
+    ├── fix_plan.md                   # 修复计划
     ├── class-diagram.mermaid         # 类图
     └── sequence-diagram.mermaid      # 时序图
 ```
@@ -349,10 +355,10 @@ agnes-video-generator/
 | S1 | 简单视频 | 纯文本 t2v | 1 |
 | S2 | 简单视频 | 图生视频 ti2vid | 1 |
 | S3 | 简单视频 | 关键帧动画 keyframes | 1 |
-| C1 | 创意视频 | 纯文字+独立+无配音 | 3 |
-| C2 | 创意视频 | 带参考图+关键帧+无配音 | 3 |
+| C1 | 创意视频 | 纯文字+独立+无配音 | 4 |
+| C2 | 创意视频 | 带参考图+关键帧+无配音 | 4 |
 | C3 | 创意视频 | 参考图生成尾帧+关键帧+无配音 | 3 |
-| C4 | 创意视频 | 独立场景+配音字幕验证 | 4 |
+| C4 | 创意视频 | 独立场景+配音字幕验证 | 3 |
 | M1 | 稿件视频 | 短稿件+配音 | 4 |
 | M2 | 稿件视频 | 短稿件+自定义字幕 | 4 |
 
@@ -605,7 +611,7 @@ def resolve_font_path(font: str) -> str:
 | D2 | 稿件 scene prompt | AI 生成英文 prompt，原文作旁白+字幕 |
 | D3 | TTS 默认语音 | `zh-CN-XiaoxiaoNeural` |
 | D4 | 视频 padding | ≤ 1 秒 |
-| D5 | 简单视频 prompt | 结构化暴露 Agnes API 全部 8 个参数，不做 AI 增强 |
+| D5 | 简单视频 prompt | 结构化暴露 Agnes API 全部 9 个参数，不做 AI 增强 |
 | D6 | 旧数据兼容 | 无 task_type → CREATIVE |
 | D7 | 多语言 | 保持 7 语言 (zh/en/ru/ja/ko/ms/id) |
 | D8 | TTS 付费方案 | 不引入，仅用 edge_tts（免费） |
