@@ -1,7 +1,8 @@
 # 回归测试方案完善与脚本修复计划 v2
 
-> **状态**：📋 规划完成，待实施
+> **状态**：🔄 实施中（8/12 完成）
 > **创建日期**：2026-06-17
+> **最近更新**：2026-06-17 — B1.1、B1.2、B4.1-B4.5、B5.1 完成
 > **关联**：`docs/regression_test_plan.md`（目标规范）、`docs/code_review_report.md`（v1 审查）、`docs/fix_plan.md`（v1 修复）
 > **范围**：仅 `scripts/regression_runner.py` 的场景定义与验证逻辑修复，不动 `server.py` / `core/` / `models/`
 
@@ -22,18 +23,18 @@
 
 | 编号 | 严重度 | 问题 | 批次 | 状态 |
 |------|--------|------|------|------|
-| B1.1 | P0 | 新增 C5 场景定义（`chaining_mode=ti2vid` 链式分支） | 1 | ⬜ |
-| B1.2 | P0 | M1/M2 `manuscript_text` 加长（激活拆段算法） | 1 | ⬜ |
+| B1.1 | P0 | 新增 C5 场景定义（`chaining_mode=ti2vid` 链式分支） | 1 | ✅ |
+| B1.2 | P0 | M1/M2 `manuscript_text` 加长（激活拆段算法） | 1 | ✅ |
 | B2.1 | P0 | F7 实现：从 task_state 读段落/音频时长做区间校验 | 2 | ⬜ |
 | B2.2 | P0 | E3-E5 改为非破坏性验证（`creative_name` 前缀 + 不强制 `ok`） | 2 | ⬜ |
 | B3.1 | P1 | 断点续传：`failed/timeout` 应重提交而非复用旧 task_id | 3 | ⬜ |
 | B3.2 | P1 | 加权信号量：拆分"提交窗口持锁" vs "轮询阶段释放" | 3 | ⬜ |
-| B4.1 | P2 | F3 分辨率匹配校验 | 4 | ⬜ |
-| B4.2 | P2 | R3 simple 顶层 status 校验 + 未完成步骤名记入 errors | 4 | ⬜ |
-| B4.3 | P2 | R6 严格 URL 匹配 + 移除子目录短路守卫 | 4 | ⬜ |
-| B4.4 | P2 | `ReportManager._save` 原子写（对齐 Manifest 的 tmp+replace） | 4 | ⬜ |
-| B4.5 | P2 | `WeightedSemaphore` 死锁防护 + release 风格统一 | 4 | ⬜ |
-| B5.1 | P3 | docstring 场景数（10）+ 轮询间隔文档同步 | 5 | ⬜ |
+| B4.1 | P2 | F3 分辨率匹配校验 | 4 | ✅ |
+| B4.2 | P2 | R3 simple 顶层 status 校验 + 未完成步骤名记入 errors | 4 | ✅ |
+| B4.3 | P2 | R6 严格 URL 匹配 + 移除子目录短路守卫 | 4 | ✅ |
+| B4.4 | P2 | `ReportManager._save` 原子写（对齐 Manifest 的 tmp+replace） | 4 | ✅ |
+| B4.5 | P2 | `WeightedSemaphore` 死锁防护 + release 风格统一 | 4 | ✅ |
+| B5.1 | P3 | docstring 场景数（10）+ 轮询间隔文档同步 | 5 | ✅ |
 
 ---
 

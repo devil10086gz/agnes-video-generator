@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import shutil
@@ -62,7 +63,7 @@ AGNES_RATE_LIMIT = 20          # 次/分钟
 # 留 50% 余量 => 总权重上限 = AGNES_RATE_LIMIT / 2 = 10
 SCENARIO_WEIGHTS = {
     "S1": 1, "S2": 1, "S3": 1,       # 简单: 1 submit + 轻量轮询
-    "C1": 4, "C2": 4, "C3": 3, "C4": 3,  # 创意: Chat + N*Image + N*Video + 轮询
+    "C1": 4, "C2": 4, "C3": 3, "C4": 3, "C5": 4,  # 创意: Chat + N*Image + N*Video + 轮询
     "M1": 4, "M2": 4,                 # 稿件: 段落*Chat + 段落*Image + 轮询
 }
 MAX_CONCURRENT_WEIGHT = AGNES_RATE_LIMIT // 2
@@ -71,6 +72,7 @@ MAX_CONCURRENT_WEIGHT = AGNES_RATE_LIMIT // 2
 TIMEOUT_SIMPLE = 30 * 60
 TIMEOUT_CREATIVE = 120 * 60
 TIMEOUT_MANUSCRIPT = 60 * 60
+# 任务状态轮询间隔（区别于 pipeline 内部 15s 的 Agnes Video API 轮询）
 POLL_INTERVAL = 20
 HEALTH_CHECK_RETRIES = 12
 
@@ -162,11 +164,22 @@ SCENARIO_DEFS = [
          "audio_enabled": True, "audio_voice": "zh-CN-XiaoxiaoNeural"},
         TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C4"]),
 
-    # ── 稿件视频（仅短文本，无长文本回归）──
+    ScenarioConfig("C5", "链式续传 ti2vid + 无配音", "creative",
+        "/api/tasks/creative",
+        {"idea": "一只猫在花园里探索的冒险故事",
+         "user_requirement": "3个场景，每个场景5秒，动画风格",
+         "style": "动画风格", "chaining_mode": "ti2vid",
+         "video_duration": 5, "audio_enabled": False},
+        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C5"]),
+
+    # ── 稿件视频（短文本，激活拆段算法）──
     ScenarioConfig("M1", "短稿件+配音", "manuscript",
         "/api/tasks/manuscript",
         {"manuscript_text": "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，"
-         "花朵盛开。小猫跳来跳去，非常开心。蝴蝶停在一朵花上，小猫悄悄靠近。",
+         "花朵盛开，空气中弥漫着花香。小猫跳来跳去，非常开心，尾巴翘得高高的。"
+         "蝴蝶停在一朵花上，小猫悄悄靠近，屏住呼吸。突然蝴蝶飞走了，小猫扑了"
+         "个空，翻了个跟头。它并不气馁，爬起来继续追逐，在花丛中穿梭。最后小猫"
+         "累了，趴在树荫下休息，看着蝴蝶越飞越远。",
          "video_duration": 5, "audio_enabled": True,
          "audio_voice": "zh-CN-XiaoxiaoNeural"},
         TIMEOUT_MANUSCRIPT, SCENARIO_WEIGHTS["M1"]),
@@ -174,7 +187,10 @@ SCENARIO_DEFS = [
     ScenarioConfig("M2", "短稿件+自定义字幕", "manuscript",
         "/api/tasks/manuscript",
         {"manuscript_text": "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，"
-         "花朵盛开。小猫跳来跳去，非常开心。蝴蝶停在一朵花上，小猫悄悄靠近。",
+         "花朵盛开，空气中弥漫着花香。小猫跳来跳去，非常开心，尾巴翘得高高的。"
+         "蝴蝶停在一朵花上，小猫悄悄靠近，屏住呼吸。突然蝴蝶飞走了，小猫扑了"
+         "个空，翻了个跟头。它并不气馁，爬起来继续追逐，在花丛中穿梭。最后小猫"
+         "累了，趴在树荫下休息，看着蝴蝶越飞越远。",
          "video_duration": 5, "audio_enabled": True,
          "audio_voice": "zh-CN-XiaoxiaoNeural",
          "subtitle_font": "SimHei", "subtitle_color": "yellow",
@@ -204,6 +220,8 @@ class WeightedSemaphore:
         self._cond = asyncio.Condition(self._lock)
 
     async def acquire(self, weight: int):
+        if weight > self.max_weight:
+            raise ValueError(f"scenario weight {weight} > max {self.max_weight}")
         async with self._lock:
             while self.current + weight > self.max_weight:
                 await self._cond.wait()
@@ -311,7 +329,8 @@ class ReportManager:
             chk = x.get("result", {}).get("checks", {}) if x.get("result") else {}
             for name, val in chk.items():
                 if name.endswith(("_width", "_height", "_step_count", "_srt_entries",
-                                  "_duration", "_count", "F2_duration", "F6_asr_text", "F4_speech_duration")):
+                                  "_duration", "_count", "F2_duration", "F6_asr_text", "F4_speech_duration",
+                                  "R3_incomplete_steps", "R6_dirs_checked", "R6_dirs_with_curl")):
                     continue
                 tc += 1
                 if val is True:
@@ -322,8 +341,12 @@ class ReportManager:
     def _save(self):
         self.data["updated_at"] = datetime.now(timezone.utc).isoformat()
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        with open(self.path, "w") as f:
+        # 原子写：先写 .tmp 再 os.replace，避免崩溃/中断时损坏续传依据
+        # （与 RegressionManifest.save 保持一致，见 fix_plan_v2.md B4.4）
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, self.path)
 
     def should_run(self, id_: str) -> bool:
         st = self.data["scenarios"][id_]["status"]
@@ -376,7 +399,7 @@ class ReportManager:
 
         for type_label, type_key, type_ids in [
             ("简单视频 (Simple)", "simple", ["S1", "S2", "S3"]),
-            ("创意视频 (Creative)", "creative", ["C1", "C2", "C3", "C4"]),
+            ("创意视频 (Creative)", "creative", ["C1", "C2", "C3", "C4", "C5"]),
             ("稿件视频 (Manuscript)", "manuscript", ["M1", "M2"]),
         ]:
             lines.append(f"---")
@@ -856,11 +879,14 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R2_task_type_matches"] = False
         checks["R3_step_count"] = 0
         checks["R3_all_completed"] = False
+        checks["R3_incomplete_steps"] = "task_dir missing"
         checks["R4_final_path_exists"] = False
         checks["R5_task_json"] = False
         checks["R5_has_video_id"] = False
         checks["R6_curl_sh"] = False
         checks["R6_has_video_id_in_curl"] = False
+        checks["R6_dirs_checked"] = 0
+        checks["R6_dirs_with_curl"] = 0
         checks["R7_sub_dirs_exist"] = "N/A"
         checks["R7_audio_files"] = "N/A"
         checks["R8_subtitle_srt"] = "N/A"
@@ -880,8 +906,11 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             clip = VideoFileClip(video)
             checks["F2_duration"] = round(clip.duration, 2)
             checks["F2_duration_gt_0"] = clip.duration > 0
+            exp_w = scenario.params.get("video_width", 768)
+            exp_h = scenario.params.get("video_height", 1152)
             checks["F3_width"] = clip.w
             checks["F3_height"] = clip.h
+            checks["F3_resolution_matches"] = (clip.w == exp_w and clip.h == exp_h)
             checks["F4_has_audio_stream"] = clip.audio is not None
             checks["F7_duration_reasonable"] = clip.duration > 0
             clip.close()
@@ -956,21 +985,26 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R2_task_type"] = sd.get("task_type", "?")
         checks["R2_task_type_matches"] = sd.get("task_type") == scenario.type
 
-        # R3: step completion — skip mode-specific steps that are intentionally not run
+        # R3: step completion
         steps = {k: v for k, v in sd.items() if k.startswith("step_")}
         checks["R3_step_count"] = len(steps)
 
-        # 对于非 keyframes 模式的创意任务，end_frame_prompts/end_frame_generation
-        # 步骤不会被触发，不应计入"未完成"
-        chaining_mode = sd.get("chaining_mode", "none")
-        _SKIPPABLE_STEPS = set()
-        if scenario.type == "creative" and chaining_mode not in ("keyframes",):
-            _SKIPPABLE_STEPS = {"step_end_frame_prompts", "step_end_frame_generation"}
+        if scenario.type == "simple":
+            # simple 任务无 step_* 字段，用顶层 status 判断
+            checks["R3_all_completed"] = sd.get("status") == "completed"
+            checks["R3_incomplete_steps"] = "" if checks["R3_all_completed"] else "status=" + sd.get("status", "?")
+        else:
+            # 对于非 keyframes 模式的创意任务，end_frame_prompts/end_frame_generation
+            # 步骤不会被触发，不应计入"未完成"
+            chaining_mode = sd.get("chaining_mode", "none")
+            _SKIPPABLE_STEPS = set()
+            if scenario.type == "creative" and chaining_mode not in ("keyframes",):
+                _SKIPPABLE_STEPS = {"step_end_frame_prompts", "step_end_frame_generation"}
 
-        active_steps = {k: v for k, v in steps.items() if k not in _SKIPPABLE_STEPS}
-        checks["R3_all_completed"] = (
-            all(v == "completed" for v in active_steps.values()) if active_steps else "N/A"
-        )
+            active_steps = {k: v for k, v in steps.items() if k not in _SKIPPABLE_STEPS}
+            incomplete = [k for k, v in active_steps.items() if v != "completed"]
+            checks["R3_all_completed"] = not incomplete if active_steps else "N/A"
+            checks["R3_incomplete_steps"] = ",".join(incomplete) if incomplete else ""
         fvf = sd.get("final_video_file", "")
         checks["R4_final_path_exists"] = bool(fvf and os.path.exists(fvf))
     else:
@@ -979,16 +1013,27 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R2_task_type_matches"] = False
         checks["R3_step_count"] = 0
         checks["R3_all_completed"] = False
+        checks["R3_incomplete_steps"] = "task_state.json missing"
         checks["R4_final_path_exists"] = False
 
     # R5: task.json — 创意任务在 scene_N/ 子目录，稿件任务在 para_N/ 子目录
     # 简单视频任务在根目录
+    _VIDEO_ID_RE = re.compile(r"agnesapi\?\S*video_id=|mode=\S*&video_id=")
+
+    def _curl_has_valid_video_id(path: str) -> bool:
+        """严格匹配：要求 agnesapi?..video_id= 或 mode=..&video_id= 模式，
+        避免注释/残留文本中裸 video_id= 的误判。"""
+        if not os.path.exists(path):
+            return False
+        with open(path) as f:
+            return bool(_VIDEO_ID_RE.search(f.read()))
+
     _task_json_found = False
     _has_video_id = False
-    _curl_found = False
-    _curl_has_video_id = False
+    _curl_dirs_checked = 0
+    _curl_dirs_with_valid_id = 0
 
-    # 检查根目录（简单视频）
+    # 检查根目录（简单视频 / 创意稿件的顶层）
     tj_root = os.path.join(task_dir, "task.json")
     cs_root = os.path.join(task_dir, "curl.sh")
     if os.path.exists(tj_root):
@@ -1000,11 +1045,11 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         except Exception:
             pass
     if os.path.exists(cs_root):
-        _curl_found = True
-        with open(cs_root) as f:
-            _curl_has_video_id = "video_id=" in f.read()
+        _curl_dirs_checked += 1
+        if _curl_has_valid_video_id(cs_root):
+            _curl_dirs_with_valid_id += 1
 
-    # 对于创意/稿件任务，额外检查子目录
+    # 对于创意/稿件任务，独立检查每个子目录（无短路守卫）
     if scenario.type == "creative":
         for entry in os.listdir(task_dir) if os.path.isdir(task_dir) else []:
             if entry.startswith("scene_"):
@@ -1022,10 +1067,9 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
                             except Exception:
                                 pass
                     if os.path.exists(cs_sub):
-                        _curl_found = True
-                        if not _curl_has_video_id:
-                            with open(cs_sub) as f:
-                                _curl_has_video_id = "video_id=" in f.read()
+                        _curl_dirs_checked += 1
+                        if _curl_has_valid_video_id(cs_sub):
+                            _curl_dirs_with_valid_id += 1
     elif scenario.type == "manuscript":
         for entry in os.listdir(task_dir) if os.path.isdir(task_dir) else []:
             if entry.startswith("para_"):
@@ -1043,15 +1087,16 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
                             except Exception:
                                 pass
                     if os.path.exists(cs_sub):
-                        _curl_found = True
-                        if not _curl_has_video_id:
-                            with open(cs_sub) as f:
-                                _curl_has_video_id = "video_id=" in f.read()
+                        _curl_dirs_checked += 1
+                        if _curl_has_valid_video_id(cs_sub):
+                            _curl_dirs_with_valid_id += 1
 
     checks["R5_task_json"] = _task_json_found
     checks["R5_has_video_id"] = _has_video_id
-    checks["R6_curl_sh"] = _curl_found
-    checks["R6_has_video_id_in_curl"] = _curl_has_video_id
+    checks["R6_curl_sh"] = _curl_dirs_checked > 0
+    checks["R6_has_video_id_in_curl"] = _curl_dirs_with_valid_id > 0
+    checks["R6_dirs_checked"] = _curl_dirs_checked
+    checks["R6_dirs_with_curl"] = _curl_dirs_with_valid_id
 
     # R7-R8: 子目录 + 音频/字幕（创意/稿件）
     # 判断是否需要音频验证：检查 audio_enabled 参数
