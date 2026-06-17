@@ -322,6 +322,11 @@ python scripts/regression_runner.py --quick
     每 20 秒 GET /api/tasks/{task_id} 检查 status
     超时限制：简单 30min / 创意 120min / 稿件 60min
 
+    失败自动续传：
+      如果任务状态变为 failed/error，自动调用 POST /api/tasks/{task_id}/resume
+      最多重试 2 次，每次续传后等待 10 秒再继续轮询
+      如果续传后仍失败，则标记为最终失败
+
     注：此处的 20s 是"任务状态轮询间隔"（脚本查 /api/tasks/{id}），
     与 AGENTS.md 8.2 节中 pipeline 内部的 15s（Agnes Video API 轮询）语境不同，不冲突。
 
@@ -381,6 +386,11 @@ python scripts/regression_runner.py --resume
 #   - status=completed/skipped → 跳过，不重复执行
 #   - status=failed/pending    → 重新提交并运行
 #   - status=running           → 视为 pending（服务器已重启，旧任务失效）
+
+# 自动续传（运行中失败时）：
+#   - 轮询过程中检测到 failed/error 状态时，自动调用 resume API
+#   - 最多重试 2 次，每次等待 10 秒后继续轮询
+#   - 确保所有流程尽可能走完，除非服务不可用
 ```
 
 ### 6.4 验证阶段

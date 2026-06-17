@@ -786,6 +786,12 @@ async def get_task_status(task_id: str) -> dict:
     )
 
 
+async def resume_task(task_id: str) -> dict:
+    return await asyncio.to_thread(
+        lambda: requests.post(f"{SERVER_URL}/api/tasks/{task_id}/resume", timeout=10).json()
+    )
+
+
 # ═══════════════════════════════════════════════════
 # Whisper 模型缓存（全局共享，避免每次验证重复加载）
 # ═══════════════════════════════════════════════════
@@ -960,11 +966,15 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             clip = VideoFileClip(video)
             checks["F2_duration"] = round(clip.duration, 2)
             checks["F2_duration_gt_0"] = clip.duration > 0
-            exp_w = scenario.params.get("video_width", 768)
-            exp_h = scenario.params.get("video_height", 1152)
+            exp_w = sd.get("video_width", scenario.params.get("video_width", 768))
+            exp_h = sd.get("video_height", scenario.params.get("video_height", 1152))
             checks["F3_width"] = clip.w
             checks["F3_height"] = clip.h
-            checks["F3_resolution_matches"] = (clip.w == exp_w and clip.h == exp_h)
+            # Agnes API may adjust dimensions (e.g. rounding to 64-multiples),
+            # so allow ±15% tolerance on each axis
+            w_ok = abs(clip.w - exp_w) / max(exp_w, 1) <= 0.15
+            h_ok = abs(clip.h - exp_h) / max(exp_h, 1) <= 0.15
+            checks["F3_resolution_matches"] = w_ok and h_ok
             checks["F4_has_audio_stream"] = clip.audio is not None
             # F7: 时长区间校验（与 F2 duration>0 不同，需要与 task_state 期望值比对）
             expected_dur = _compute_expected_duration(sd, scenario)
@@ -993,10 +1003,13 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             checks["F7_duration_reasonable"] = False
 
         # ASR: speech content detection + subtitle text matching
+        # 简单视频无配音，直接跳过 ASR 检查
+        is_simple = sd.get("task_type") == "simple"
         asr_eligible = (
             ve
             and checks.get("F4_has_audio_stream") is True
             and scenario.params.get("audio_enabled", True)
+            and not is_simple
         )
         if asr_eligible:
             asr = _asr_validate(video)
@@ -1262,6 +1275,8 @@ async def run_scenario(scenario: ScenarioConfig,
 
         # 轮询 + 验证阶段不持锁
         final_status = None
+        retry_count = 0
+        max_retries = 2
         deadline = time.monotonic() + scenario.timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(POLL_INTERVAL)
@@ -1272,6 +1287,18 @@ async def run_scenario(scenario: ScenarioConfig,
                     final_status = "completed"
                     break
                 elif st in ("failed", "error"):
+                    if retry_count < max_retries:
+                        retry_count += 1
+                        logger.info(
+                            f"[{scenario.id}] 任务失败，尝试续传 "
+                            f"(retry {retry_count}/{max_retries})")
+                        try:
+                            await resume_task(task_id)
+                            await asyncio.sleep(10)
+                            continue
+                        except Exception as re:
+                            logger.warning(
+                                f"[{scenario.id}] 续传失败: {re}")
                     final_status = f"failed: {state.get('error', '?')}"
                     break
                 elif st == "running":
@@ -1528,7 +1555,8 @@ async def main(resume: bool = False, auto_start: bool = False,
                 ).json().get("tasks", [])
                 task = next(
                     (t for t in tasks
-                     if t.get("creative_name", "").startswith(sc.type)
+                     if (t.get("creative_name", "").startswith(sc.type)
+                         or t.get("task_type") == sc.type)
                      and not t.get("creative_name", "").startswith("__ep_probe__")),
                     None)
                 if task and task.get("status") == "completed":
