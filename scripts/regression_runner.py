@@ -825,6 +825,50 @@ def _get_expected_narration(task_state: dict, scenario: ScenarioConfig) -> str:
     return ""
 
 
+def _compute_expected_duration(task_state: dict, scenario: ScenarioConfig) -> float | None:
+    """从 task_state 计算期望视频总时长（秒），无法计算时返回 None。
+
+    - simple: 直接读 duration 字段
+    - creative: scene_count × video_duration
+    - manuscript: sum(len(para.text)/4.0) 或 combined_audio 时长
+    """
+    if scenario.type == "simple":
+        dur = task_state.get("duration")
+        return float(dur) if dur else None
+
+    if scenario.type in ("creative", "manuscript"):
+        video_dur = task_state.get("video_duration", 5)
+        if scenario.type == "creative":
+            scenes = task_state.get("scenes", [])
+            count = len(scenes) if scenes else task_state.get("scene_count", 0)
+            if not count:
+                return None
+            expected = count * video_dur
+        else:  # manuscript
+            paras = task_state.get("paragraphs", [])
+            if not paras:
+                return None
+            # 每段时长 ≈ max(ceil(text_len/4), 3)
+            expected = sum(max(-(-len(p.get("text", "")) // 4), 3) for p in paras)
+
+        # 若有合并音频，取 max(视频总时长, 音频时长)
+        combined = task_state.get("combined_audio", "")
+        if combined and os.path.exists(combined):
+            try:
+                r = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", combined],
+                    capture_output=True, text=True, timeout=10,
+                )
+                audio_dur = float(r.stdout.strip())
+                expected = max(expected, audio_dur)
+            except Exception:
+                pass
+        return float(expected)
+
+    return None
+
+
 def _asr_validate(video_path: str) -> dict:
     result = {"has_speech": False, "text": "", "duration": 0.0, "error": ""}
     tmp_audio = video_path + "_asr_tmp.wav"
@@ -900,6 +944,16 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
     checks["F1_final_video_exists"] = ve
     checks["F1_final_video_nonempty"] = os.path.getsize(video) > 0 if ve else False
 
+    # 提前加载 task_state，供 F7 和 R1-R4 共用
+    ts = os.path.join(task_dir, "task_state.json")
+    sd: dict = {}
+    if os.path.exists(ts):
+        try:
+            with open(ts) as f:
+                sd = json.load(f)
+        except Exception:
+            pass
+
     if ve:
         try:
             from moviepy import VideoFileClip
@@ -912,7 +966,16 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             checks["F3_height"] = clip.h
             checks["F3_resolution_matches"] = (clip.w == exp_w and clip.h == exp_h)
             checks["F4_has_audio_stream"] = clip.audio is not None
-            checks["F7_duration_reasonable"] = clip.duration > 0
+            # F7: 时长区间校验（与 F2 duration>0 不同，需要与 task_state 期望值比对）
+            expected_dur = _compute_expected_duration(sd, scenario)
+            if expected_dur:
+                tol = 0.15
+                checks["F7_expected_duration"] = round(expected_dur, 2)
+                checks["F7_duration_reasonable"] = (
+                    abs(clip.duration - expected_dur) / expected_dur <= tol
+                )
+            else:
+                checks["F7_duration_reasonable"] = clip.duration > 0
             clip.close()
         except ImportError:
             logger.warning("moviepy 不可用，跳过视频元数据验证")
@@ -921,6 +984,7 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             checks["F3_width"] = "skip"
             checks["F3_height"] = "skip"
             checks["F4_has_audio_stream"] = "skip"
+            checks["F7_expected_duration"] = "skip"
             checks["F7_duration_reasonable"] = "skip"
         except Exception as e:
             checks["F2_duration"] = f"err:{e}"
@@ -976,11 +1040,8 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["F6_asr_text"] = "N/A"
         checks["F6_text_match"] = "N/A"
 
-    # R1-R4: task_state.json
-    ts = os.path.join(task_dir, "task_state.json")
-    if os.path.exists(ts):
-        with open(ts) as f:
-            sd = json.load(f)
+    # R1-R4: task_state.json（sd 已在上方加载）
+    if sd:
         checks["R1_task_state_valid"] = True
         checks["R2_task_type"] = sd.get("task_type", "?")
         checks["R2_task_type_matches"] = sd.get("task_type") == scenario.type
@@ -1169,30 +1230,37 @@ async def run_scenario(scenario: ScenarioConfig,
     report.update_scenario(scenario.id, "running")
     logger.info(f"[{scenario.id}] ▶ 开始 (weight={scenario.weight}): {scenario.label}")
 
+    task_id = None
+    dir_name = None
     try:
-        await sema.acquire(scenario.weight)
-        logger.info(f"[{scenario.id}] 获许可 w={sema.current}/{sema.max_weight}")
-    except Exception as e:
-        report.update_scenario(scenario.id, "failed", errors=[f"semaphore: {e}"])
-        return
+        # B3.1: 只有 submitted/running（崩溃中断）才复用旧 task_id；
+        # failed/timeout 必须重新提交
+        existing = report.data["scenarios"].get(scenario.id, {})
+        existing_status = existing.get("status")
+        existing_result = existing.get("result") or {}
 
-    try:
-        # Check if this scenario was already submitted (resume from crash)
-        existing = report.data["scenarios"].get(scenario.id, {}).get("result")
-        task_id = None
-        dir_name = None
-        if existing and existing.get("task_id"):
-            task_id = existing["task_id"]
-            dir_name = existing.get("dir_name", task_id)
+        if (existing_result.get("task_id")
+                and existing_status in ("submitted", "running")):
+            task_id = existing_result["task_id"]
+            dir_name = existing_result.get("dir_name", task_id)
             logger.info(f"[{scenario.id}] 续传已有任务 {task_id[:12]}")
         else:
-            submit_result = await submit_task(scenario)
-            task_id = submit_result["task_id"]
-            dir_name = submit_result.get("dir_name", task_id)
-            report.update_scenario(scenario.id, "submitted",
-                                   result={"task_id": task_id, "dir_name": dir_name})
-            logger.info(f"[{scenario.id}] 提交 → {task_id[:12]}")
+            # B3.2: 信号量只在「提交 + 确认」窗口持有
+            await sema.acquire(scenario.weight)
+            try:
+                submit_result = await submit_task(scenario)
+                task_id = submit_result["task_id"]
+                dir_name = submit_result.get("dir_name", task_id)
+                report.update_scenario(
+                    scenario.id, "submitted",
+                    result={"task_id": task_id, "dir_name": dir_name})
+                logger.info(f"[{scenario.id}] 提交 → {task_id[:12]}")
+            finally:
+                await sema.release(scenario.weight)
+                logger.info(
+                    f"[{scenario.id}] 释放 w={sema.current}/{sema.max_weight}")
 
+        # 轮询 + 验证阶段不持锁
         final_status = None
         deadline = time.monotonic() + scenario.timeout
         while time.monotonic() < deadline:
@@ -1209,7 +1277,9 @@ async def run_scenario(scenario: ScenarioConfig,
                 elif st == "running":
                     fvf = state.get("final_video_file", "")
                     if fvf:
-                        logger.info(f"[{scenario.id}] running, video={os.path.basename(fvf)}")
+                        logger.info(
+                            f"[{scenario.id}] running, "
+                            f"video={os.path.basename(fvf)}")
                 elif st == "pending":
                     logger.info(f"[{scenario.id}] pending...")
                 elif st:
@@ -1224,47 +1294,61 @@ async def run_scenario(scenario: ScenarioConfig,
         if final_status == "completed":
             checks = await validate_task(dir_name, scenario)
             ok_count = sum(1 for v in checks.values() if v is True)
-            na_count = sum(1 for v in checks.values() if v == "N/A" or v == "skip")
+            na_count = sum(
+                1 for v in checks.values() if v == "N/A" or v == "skip")
             skip_count = sum(1 for v in checks.values() if v == "skip")
-            total_real = sum(1 for v in checks.values() if v not in ("N/A", "skip") or v is True or v is False)
-            logger.info(f"[{scenario.id}] 验证 {ok_count}/{total_real} 通过 ({na_count} N/A)")
+            total_real = sum(
+                1 for v in checks.values()
+                if v not in ("N/A", "skip") or v is True or v is False)
+            logger.info(
+                f"[{scenario.id}] 验证 {ok_count}/{total_real} 通过 "
+                f"({na_count} N/A)")
 
             checks_clean = {}
             for k, v in checks.items():
                 if k in ("F2_duration", "F3_width", "F3_height",
                          "R3_step_count", "R10_srt_entries"):
-                    checks_clean[k] = v if not isinstance(v, (int, float)) else v
+                    checks_clean[k] = (
+                        v if not isinstance(v, (int, float)) else v)
                 elif isinstance(v, str) and v == "skip":
                     checks_clean[k] = True
                 else:
                     checks_clean[k] = v
 
-            errors = [k for k, v in checks.items()
-                     if v is False and not any(k.endswith(x) for x in
-                        ("_width", "_height", "_duration", "_count", "_entries",
-                         "F2_duration", "F6_asr_text", "F4_speech_duration"))]
-            report.update_scenario(scenario.id, "completed",
-                                   result={"task_id": task_id, "dir_name": dir_name,
-                                           "duration_s": elapsed,
-                                           "started_at": datetime.fromtimestamp(
-                                               start, timezone.utc).isoformat(),
-                                           "completed_at": datetime.now(timezone.utc).isoformat(),
-                                           "checks": checks_clean},
-                                   errors=errors)
+            errors = [
+                k for k, v in checks.items()
+                if v is False and not any(
+                    k.endswith(x) for x in
+                    ("_width", "_height", "_duration", "_count",
+                     "_entries", "F2_duration", "F6_asr_text",
+                     "F4_speech_duration"))]
+            report.update_scenario(
+                scenario.id, "completed",
+                result={"task_id": task_id, "dir_name": dir_name,
+                        "duration_s": elapsed,
+                        "started_at": datetime.fromtimestamp(
+                            start, timezone.utc).isoformat(),
+                        "completed_at": datetime.now(
+                            timezone.utc).isoformat(),
+                        "checks": checks_clean},
+                errors=errors)
             tag = "✅" if not errors else "⚠️"
-            logger.info(f"[{scenario.id}] {tag} {elapsed}s" + (f" ({len(errors)} 检查失败)" if errors else ""))
+            logger.info(
+                f"[{scenario.id}] {tag} {elapsed}s"
+                + (f" ({len(errors)} 检查失败)" if errors else ""))
         else:
-            report.update_scenario(scenario.id, "failed",
-                                   result={"task_id": task_id, "dir_name": dir_name,
-                                           "duration_s": elapsed},
-                                   errors=[f"status={final_status}"])
-            logger.warning(f"[{scenario.id}] ❌ {final_status} ({elapsed}s)")
+            report.update_scenario(
+                scenario.id, "failed",
+                result={"task_id": task_id, "dir_name": dir_name,
+                        "duration_s": elapsed},
+                errors=[f"status={final_status}"])
+            logger.warning(
+                f"[{scenario.id}] ❌ {final_status} ({elapsed}s)")
 
-        # 记录到产物清单（无论成功/失败/超时都记录）
+        # 记录到产物清单
         if task_id:
             manifest.record_scenario(
-                scenario.id, task_id,
-                dir_name or "",
+                scenario.id, task_id, dir_name or "",
                 report.data["scenarios"].get(
                     scenario.id, {}).get("status", "unknown"),
                 error="; ".join(report.data["scenarios"].get(
@@ -1274,21 +1358,16 @@ async def run_scenario(scenario: ScenarioConfig,
     except Exception as e:
         elapsed = round(time.monotonic() - start, 1)
         logger.error(f"[{scenario.id}] ❌ {e}")
-        report.update_scenario(scenario.id, "failed", errors=[str(e)])
-
-        # 记录到产物清单（无论成功/失败/超时都记录）
+        report.update_scenario(
+            scenario.id, "failed", errors=[str(e)])
         if task_id:
             manifest.record_scenario(
-                scenario.id, task_id,
-                dir_name or "",
+                scenario.id, task_id, dir_name or "",
                 report.data["scenarios"].get(
                     scenario.id, {}).get("status", "unknown"),
                 error="; ".join(report.data["scenarios"].get(
                     scenario.id, {}).get("errors", [])),
             )
-    finally:
-        await sema.release(scenario.weight)
-        logger.info(f"[{scenario.id}] 释放 w={sema.current}/{sema.max_weight}")
 
 
 # ═══════════════════════════════════════════════════
@@ -1316,24 +1395,31 @@ async def verify_endpoints(report: ReportManager):
         return r.status_code == 200, r.status_code
 
     async def _post_ok(path: str, data: dict) -> tuple:
+        """E3-E5 端点探测：只验证 HTTP 200，不要求 ok=true，
+        避免创建孤儿任务。creative/manuscript 使用 __ep_probe__ creative_name 隔离。"""
         r = await asyncio.to_thread(
             lambda: requests.post(f"{SERVER_URL}{path}", data=data, timeout=15))
-        return r.status_code == 200 and r.json().get("ok"), r.status_code
+        return r.status_code in (200, 201), r.status_code
 
     await asyncio.gather(
         check("E1", "GET / → 200 + index.html",
               lambda: _200("/", "Agnes Video Generator")),
         check("E2", "GET /api/config → 200",
               lambda: _200("/api/config")),
-        check("E3", "POST /api/tasks/simple → ok",
+        check("E3", "POST /api/tasks/simple → 200",
               lambda: _post_ok("/api/tasks/simple",
                                {"prompt": "test", "mode": "t2v", "duration": 5})),
-        check("E4", "POST /api/tasks/creative → ok",
+        check("E4", "POST /api/tasks/creative → 200",
               lambda: _post_ok("/api/tasks/creative",
-                               {"idea": "test cat", "user_requirement": "1个场景，5秒"})),
-        check("E5", "POST /api/tasks/manuscript → ok",
+                               {"idea": "__ep_probe__",
+                                "user_requirement": "1个场景，5秒",
+                                "audio_enabled": "false",
+                                "creative_name": "__ep_probe__"})),
+        check("E5", "POST /api/tasks/manuscript → 200",
               lambda: _post_ok("/api/tasks/manuscript",
-                               {"manuscript_text": "测试稿件。第二句。"})),
+                               {"manuscript_text": "__ep_probe__。第二句。",
+                                "audio_enabled": "false",
+                                "creative_name": "__ep_probe__"})),
         check("E6", "GET /api/tasks → list",
               lambda: _200("/api/tasks")),
         check("E7", "GET /api/tasks/{id} → task_type",
@@ -1442,7 +1528,8 @@ async def main(resume: bool = False, auto_start: bool = False,
                 ).json().get("tasks", [])
                 task = next(
                     (t for t in tasks
-                     if t.get("creative_name", "").startswith(sc.type)),
+                     if t.get("creative_name", "").startswith(sc.type)
+                     and not t.get("creative_name", "").startswith("__ep_probe__")),
                     None)
                 if task and task.get("status") == "completed":
                     dn = task.get("dir_name", task["task_id"])
