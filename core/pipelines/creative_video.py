@@ -482,8 +482,19 @@ class CreativeVideoPipeline(BasePipeline):
             return {}
 
         if self._state.step_end_frame_generation == StepStatus.COMPLETED:
-            logger.info("[Pipeline] Step end_frame_gen: SKIP (already completed)")
-            return self._state.pregenerated_end_frames or {}
+            cached_frames = self._state.pregenerated_end_frames or {}
+            # 验证缓存的文件是否实际存在（防止标记 completed 但文件丢失）
+            all_exist = all(
+                os.path.exists(p) for p in cached_frames.values()
+            ) if cached_frames else False
+            if all_exist:
+                logger.info("[Pipeline] Step end_frame_gen: SKIP (already completed)")
+                return cached_frames
+            logger.warning(
+                "[Pipeline] Step end_frame_gen: marked completed but some files missing, re-running"
+            )
+            self._state.step_end_frame_generation = StepStatus.PENDING
+            self.task_manager.update_step("step_end_frame_generation", StepStatus.PENDING)
 
         logger.info(f"[Pipeline] Step end_frame_gen: RUNNING ({len(end_frame_prompts)} frames)")
 
@@ -717,8 +728,16 @@ class CreativeVideoPipeline(BasePipeline):
                 video_path = os.path.join(self.working_dir, f"scene_{scene_idx}", "video.mp4")
                 if os.path.exists(video_path):
                     all_video_paths.append(video_path)
-            logger.info(f"[Pipeline] Step video_gen: reconstructed {len(all_video_paths)} video paths from disk")
-            return all_video_paths
+            # 验证所有场景的视频文件都存在
+            if len(all_video_paths) == len(scenes):
+                logger.info(f"[Pipeline] Step video_gen: reconstructed {len(all_video_paths)} video paths from disk")
+                return all_video_paths
+            logger.warning(
+                f"[Pipeline] Step video_gen: marked completed but only {len(all_video_paths)}/{len(scenes)} "
+                "videos exist, re-running"
+            )
+            self._state.step_video_generation = StepStatus.PENDING
+            self.task_manager.update_step("step_video_generation", StepStatus.PENDING)
 
         logger.info(
             f"[Pipeline] Step video_gen: RUNNING "
