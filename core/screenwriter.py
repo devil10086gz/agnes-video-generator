@@ -225,6 +225,13 @@ exactly as described in the story, including:
 - Any distinguishing marks, scars, or features
 - Color palette of the character
 
+IMPORTANT — the reference image will be used as an i2i identity anchor, so \
+the prompt MUST also specify:
+- Clear, front-facing face with eyes and mouth fully visible
+- No occlusion (no hands, hair, or objects blocking the face)
+- Even, diffused lighting (no harsh shadows on the face)
+- Neutral or slight smile expression
+
 The prompt should be in ENGLISH regardless of the story language, for best \
 image generation results. It should be a single paragraph, 3-5 sentences, \
 rich in visual detail. Include the art style (e.g., "realistic cinematic", \
@@ -278,23 +285,25 @@ Output ONLY the appearance description text. No JSON, no labels, no markdown.
     def generate_end_frame_prompts(
         self, scenes: List[str], style: str, character_appearance: str = ""
     ) -> List[str]:
+        # 批次4：角色外观由批次3的程序化拼入处理，LLM 只输出 [CHANGE] 部分
+        # 系统提示中仍提供 character_appearance 作为上下文参考，避免 LLM 描述与角色矛盾
         if character_appearance:
-            character_block = f"""
-[CHARACTER APPEARANCE — This must appear verbatim in every prompt]
+            context_block = f"""
+[CONTEXT — Character appearance for reference only, do NOT copy into output]
 {character_appearance}
 
-YOUR PROMPT MUST explicitly include ALL of the above appearance details
-(hair, face, glasses, clothing, shoes) — word for word. Only the pose,
-expression, and environment should change between scenes.
+Your prompt should describe the SCENE'S END FRAME only — environment, pose, \
+lighting, mood, camera angle. Do NOT repeat the character's hair, face, \
+clothing, or accessories — those are injected programmatically.
 """
         else:
-            character_block = ""
+            context_block = ""
 
         system_prompt = f"""\
 You are a visual prompt engineer for AI image generation. Generate a STATIC \
 image prompt that represents what this video scene looks like at its very END \
 — the final frozen frame of the video.
-{character_block}
+{context_block}
 Rules:
 - Describe a STATIC frozen moment, NOT motion or action verbs.
 - Focus on: pose, facial expression, hand position, body posture, camera angle, \
@@ -302,6 +311,8 @@ lighting, background elements — everything visible in a single frozen frame.
 - Include art style (e.g., "realistic cinematic", "anime").
 - 3-5 sentences, rich in visual detail.
 - MUST be in ENGLISH.
+- Do NOT describe the character's appearance (hair, clothing, face) — only the \
+scene environment, pose, lighting, and mood.
 
 Output ONLY the image prompt text, no JSON, no explanation.
 """
