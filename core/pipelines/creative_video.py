@@ -116,11 +116,21 @@ class CreativeVideoPipeline(BasePipeline):
         if self._state.step_image_analysis == StepStatus.COMPLETED:
             analysis_file = self._state.image_analysis_file
             if os.path.exists(analysis_file):
-                logger.info("[Pipeline] Step image_analysis: SKIP (already completed, file exists)")
                 with open(analysis_file, "r") as f:
-                    return f.read()
-            logger.warning("[Pipeline] Step image_analysis: marked completed but file missing, re-running")
-            return ""
+                    content = f.read()
+                # 检测之前分析失败留下的错误文本，强制重新分析
+                if "(分析失败" in content:
+                    logger.warning(
+                        "[Pipeline] Step image_analysis: detected error text in saved file, re-running"
+                    )
+                    self._state.step_image_analysis = StepStatus.PENDING
+                    self.task_manager.update_step("step_image_analysis", StepStatus.PENDING)
+                else:
+                    logger.info("[Pipeline] Step image_analysis: SKIP (already completed, file exists)")
+                    return content
+            else:
+                logger.warning("[Pipeline] Step image_analysis: marked completed but file missing, re-running")
+                return ""
 
         logger.info("[Pipeline] Step image_analysis: RUNNING")
         images_to_analyze: List[str] = []
@@ -358,6 +368,9 @@ class CreativeVideoPipeline(BasePipeline):
         character_appearance = await asyncio.to_thread(
             self.screenwriter.get_character_appearance, story
         )
+        # 持久化角色外观文本，支持断点续传一致性（批次3）
+        self._state.character_appearance = character_appearance
+        self.task_manager.update_state(character_appearance=character_appearance)
         end_frame_prompts = await asyncio.to_thread(
             self.screenwriter.generate_end_frame_prompts,
             scenes, self._state.style, character_appearance
@@ -375,6 +388,77 @@ class CreativeVideoPipeline(BasePipeline):
         )
         await self._emit("end_frame_prompts", "completed", f"尾帧提示词完成，共 {len(end_frame_prompts)} 个", 0.25)
         return end_frame_prompts
+
+    # ==================================================================
+    # Helpers: image normalization
+    # ==================================================================
+
+    @staticmethod
+    def _normalize_image_to_size(src: str, vw: int, vh: int, dst: str) -> str:
+        """Normalize an image to exactly ``vw x vh`` using ffmpeg scale+pad.
+
+        Keeps the original aspect ratio (no stretching) and pads with black
+        bars. This avoids feeding i2i a composition that the model would
+        otherwise stretch/letterbox unpredictably — the i2i model then only
+        needs to preserve identity, not reshape the layout.
+
+        Args:
+            src: Source image path.
+            vw: Target width.
+            vh: Target height.
+            dst: Destination path. If it already exists it is reused (cache).
+
+        Returns:
+            Path to the normalized image (``dst``).
+        """
+        if os.path.exists(dst):
+            logger.debug(f"[Pipeline] normalize cache hit: {dst}")
+            return dst
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", src,
+                "-vf",
+                f"scale={vw}:{vh}:force_original_aspect_ratio=decrease,"
+                f"pad={vw}:{vh}:(ow-iw)/2:(oh-ih)/2",
+                dst,
+            ],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        return dst
+
+    def _get_normalized_character_ref(self, character_ref_path: str) -> str:
+        """Return a character-reference image normalized to the video size.
+
+        Caches the result under ``working_dir/character_ref_normalized.png``
+        so it is generated at most once per task. Returns the original path
+        unchanged if normalization is not possible (e.g. path is a URL).
+
+        Args:
+            character_ref_path: Original character reference path or URL.
+
+        Returns:
+            Path to the normalized image, or the original path on failure.
+        """
+        vw = self._state.video_width
+        vh = self._state.video_height
+        if not character_ref_path:
+            return character_ref_path
+        # Only normalize local files; URLs/data: are passed through as-is.
+        if character_ref_path.startswith(("http://", "https://", "data:")):
+            return character_ref_path
+        if not os.path.exists(character_ref_path):
+            return character_ref_path
+        dst = os.path.join(self.working_dir, "character_ref_normalized.png")
+        try:
+            return self._normalize_image_to_size(character_ref_path, vw, vh, dst)
+        except Exception as e:
+            logger.warning(
+                f"[Pipeline] normalize character ref failed ({e}), using original"
+            )
+            return character_ref_path
 
     # ==================================================================
     # Step 3.6: Pre-generate End Frames (keyframes mode)
@@ -398,8 +482,19 @@ class CreativeVideoPipeline(BasePipeline):
             return {}
 
         if self._state.step_end_frame_generation == StepStatus.COMPLETED:
-            logger.info("[Pipeline] Step end_frame_gen: SKIP (already completed)")
-            return self._state.pregenerated_end_frames or {}
+            cached_frames = self._state.pregenerated_end_frames or {}
+            # 验证缓存的文件是否实际存在（防止标记 completed 但文件丢失）
+            all_exist = all(
+                os.path.exists(p) for p in cached_frames.values()
+            ) if cached_frames else False
+            if all_exist:
+                logger.info("[Pipeline] Step end_frame_gen: SKIP (already completed)")
+                return cached_frames
+            logger.warning(
+                "[Pipeline] Step end_frame_gen: marked completed but some files missing, re-running"
+            )
+            self._state.step_end_frame_generation = StepStatus.PENDING
+            self.task_manager.update_step("step_end_frame_generation", StepStatus.PENDING)
 
         logger.info(f"[Pipeline] Step end_frame_gen: RUNNING ({len(end_frame_prompts)} frames)")
 
@@ -409,6 +504,8 @@ class CreativeVideoPipeline(BasePipeline):
 
         pregenerated: dict = {}
         cached = self._state.pregenerated_end_frames or {}
+        # 批次5：维护上一场景尾帧路径，用于多图 i2i 场景间视觉链
+        prev_end_frame: Optional[str] = None
 
         for scene_idx in range(len(scenes)):
             if self._is_shutdown():
@@ -419,6 +516,7 @@ class CreativeVideoPipeline(BasePipeline):
 
             if str(scene_idx) in cached and os.path.exists(end_frame_path):
                 pregenerated[scene_idx] = end_frame_path
+                prev_end_frame = end_frame_path  # 维护视觉链
                 continue
 
             user_ef = (
@@ -446,11 +544,13 @@ class CreativeVideoPipeline(BasePipeline):
                     end_frame_path = dest
                 pregenerated[scene_idx] = end_frame_path
                 cached[str(scene_idx)] = end_frame_path
+                prev_end_frame = end_frame_path  # 维护视觉链
                 continue
 
             if os.path.exists(end_frame_path):
                 pregenerated[scene_idx] = end_frame_path
                 cached[str(scene_idx)] = end_frame_path
+                prev_end_frame = end_frame_path  # 维护视觉链
                 continue
 
             if self._state.generate_end_frames_from_ref and character_ref_path:
@@ -464,13 +564,34 @@ class CreativeVideoPipeline(BasePipeline):
                     if scene_idx < len(end_frame_prompts)
                     else "cinematic end frame"
                 )
+                # 程序化拼入 [PRESERVE] 角色外观硬约束，确保 i2i 身份一致性（批次3）
+                # 用户提供了参考图时跳过：文本描述从故事提取，可能与参考图衣着矛盾，
+                # 此时让 i2i 模型直接看参考图保持身份一致性。
+                if self._state.character_appearance and not self._state.reference_image:
+                    end_frame_prompt = (
+                        "[PRESERVE — keep exactly]\n"
+                        f"{self._state.character_appearance}\n"
+                        "Keep the same person, same face, same clothing. Do NOT alter identity.\n\n"
+                        "[CHANGE — end frame of this scene]\n"
+                        f"{end_frame_prompt}"
+                    )
+                # 规范化角色参考图到目标尺寸，避免 i2i 拉伸/构图错位
+                normalized_ref = self._get_normalized_character_ref(character_ref_path)
+                # 批次5：多图 i2i 引导 —— 角色图锁身份 + 上一场景尾帧锁环境/风格延续
+                ref_images = [normalized_ref]
+                if prev_end_frame and os.path.exists(prev_end_frame):
+                    ref_images.append(prev_end_frame)
+                    logger.info(
+                        f"[EndFrame] Scene {scene_idx}: multi-ref i2i "
+                        f"(character + prev scene {scene_idx-1} end frame)"
+                    )
                 for attempt in range(3):
                     if self._is_shutdown():
                         raise PipelineShutdown(f"interrupted during end frame gen scene {scene_idx}")
                     try:
                         img_output = await self.image_generator.generate_single_image(
                             prompt=end_frame_prompt,
-                            reference_image_paths=[character_ref_path],
+                            reference_image_paths=ref_images,
                             size=f"{vw}x{vh}",
                         )
                         img_output.save(end_frame_path)
@@ -506,6 +627,9 @@ class CreativeVideoPipeline(BasePipeline):
                 img_output.save(end_frame_path)
                 pregenerated[scene_idx] = end_frame_path
                 cached[str(scene_idx)] = end_frame_path
+
+            # 维护视觉链：所有路径（i2i/t2i）生成完毕后更新 prev_end_frame
+            prev_end_frame = end_frame_path
 
             if scene_idx < len(scenes) - 1:
                 await asyncio.sleep(2)
@@ -604,8 +728,16 @@ class CreativeVideoPipeline(BasePipeline):
                 video_path = os.path.join(self.working_dir, f"scene_{scene_idx}", "video.mp4")
                 if os.path.exists(video_path):
                     all_video_paths.append(video_path)
-            logger.info(f"[Pipeline] Step video_gen: reconstructed {len(all_video_paths)} video paths from disk")
-            return all_video_paths
+            # 验证所有场景的视频文件都存在
+            if len(all_video_paths) == len(scenes):
+                logger.info(f"[Pipeline] Step video_gen: reconstructed {len(all_video_paths)} video paths from disk")
+                return all_video_paths
+            logger.warning(
+                f"[Pipeline] Step video_gen: marked completed but only {len(all_video_paths)}/{len(scenes)} "
+                "videos exist, re-running"
+            )
+            self._state.step_video_generation = StepStatus.PENDING
+            self.task_manager.update_step("step_video_generation", StepStatus.PENDING)
 
         logger.info(
             f"[Pipeline] Step video_gen: RUNNING "
@@ -940,15 +1072,42 @@ class CreativeVideoPipeline(BasePipeline):
                         )
                         end_frame_path = dest
                     else:
+                        # 批次6：兖底尾帧生成与 Step 3.6 一致策略（i2i + 规范化角色图 + 拼合 prompt）
                         end_frame_prompt = (
                             end_frame_prompts[scene_idx]
                             if scene_idx < len(end_frame_prompts)
                             else "cinematic end frame"
                         )
-                        img_output = await self.image_generator.generate_single_image(
-                            prompt=end_frame_prompt,
-                            size=f"{vw}x{vh}",
+                        use_i2i = (
+                            self._state.generate_end_frames_from_ref
+                            and reference_image
                         )
+                        if use_i2i:
+                            # 程序化拼入 [PRESERVE] 角色外观硬约束
+                            # 用户提供了参考图时跳过，避免文本描述与参考图矛盾
+                            if self._state.character_appearance and not self._state.reference_image:
+                                end_frame_prompt = (
+                                    "[PRESERVE — keep exactly]\n"
+                                    f"{self._state.character_appearance}\n"
+                                    "Keep the same person, same face, same clothing. "
+                                    "Do NOT alter identity.\n\n"
+                                    "[CHANGE — end frame of this scene]\n"
+                                    f"{end_frame_prompt}"
+                                )
+                            normalized_ref = self._get_normalized_character_ref(reference_image)
+                            logger.info(
+                                f"[Keyframes] Scene {scene_idx} fallback: i2i with normalized ref"
+                            )
+                            img_output = await self.image_generator.generate_single_image(
+                                prompt=end_frame_prompt,
+                                reference_image_paths=[normalized_ref],
+                                size=f"{vw}x{vh}",
+                            )
+                        else:
+                            img_output = await self.image_generator.generate_single_image(
+                                prompt=end_frame_prompt,
+                                size=f"{vw}x{vh}",
+                            )
                         img_output.save(end_frame_path)
 
             first_frame_url = await self.video_generator._resolve_image_ref(current_first_frame)

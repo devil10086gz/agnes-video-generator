@@ -239,7 +239,7 @@
                 <span data-i18n="enableCustomEndFrames">启用自定义尾帧</span>
               </label>
               <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer">
-                <input type="checkbox" id="c_gen_end_from_ref" onchange="toggleCEndFrameMode()" class="rounded bg-gray-800 border-gray-600">
+                <input type="checkbox" id="c_gen_end_from_ref" checked onchange="toggleCEndFrameMode()" class="rounded bg-gray-800 border-gray-600">
                 <span data-i18n="genEndFramesFromRef">基于参考图生成尾帧 (i2i)</span>
               </label>
             </div>
@@ -266,7 +266,7 @@
         <div id="c_audio_body" class="collapse-body hidden mt-4">
           <div class="flex items-center gap-3 mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-              <input type="checkbox" id="c_audio_enabled" checked class="rounded bg-gray-800 border-gray-600">
+              <input type="checkbox" id="c_audio_enabled" class="rounded bg-gray-800 border-gray-600">
               <span data-i18n="enableNarration">启用旁白配音</span>
             </label>
           </div>
@@ -504,6 +504,7 @@ const T = {
     taskName: '任务名称', taskNamePlaceholder: '可选，留空自动生成',
     ideaLabel: '创意描述', ideaPlaceholder: '描述你心中的故事、场景和角色...',
     userRequirement: '用户要求', visualStyle: '视觉风格',
+    requirementDefault: '3个场景，每个场景5秒，电影质感', styleDefault: '电影质感写实风格',
     chainingMode: '串联模式', modeKeyframes: 'keyframes (推荐)', modeTi2vid: 'ti2vid (过渡帧)', modeNone: 'none (独立场景)',
     referenceImage: '参考图 (可选)', refDescription: '可选。提供后所有场景将以该图为视觉锚点；不提供则自动从故事中生成角色参考图',
     customEndFrames: '自定义尾帧 (可选)', enableCustomEndFrames: '启用自定义尾帧',
@@ -564,6 +565,7 @@ const T = {
     taskName: 'Task Name', taskNamePlaceholder: 'Optional, auto-generated if blank',
     ideaLabel: 'Idea Description', ideaPlaceholder: 'Describe your story, scenes, and characters...',
     userRequirement: 'Requirements', visualStyle: 'Visual Style',
+    requirementDefault: '3 scenes, 5 seconds each, cinematic quality', styleDefault: 'cinematic realistic style',
     chainingMode: 'Chaining Mode', modeKeyframes: 'keyframes (recommended)', modeTi2vid: 'ti2vid (transition)', modeNone: 'none (independent)',
     referenceImage: 'Reference Image (Optional)', refDescription: 'Optional. All scenes use this as visual anchor. Auto-generated if not provided.',
     customEndFrames: 'Custom End Frames (Optional)', enableCustomEndFrames: 'Enable custom end frames',
@@ -621,6 +623,7 @@ const T = {
     taskName: 'Название', taskNamePlaceholder: 'Необязательно',
     ideaLabel: 'Идея', ideaPlaceholder: 'Опишите историю, сцены, персонажей...',
     userRequirement: 'Требования', visualStyle: 'Стиль',
+    requirementDefault: '3 сцены, по 5 секунд, кинематографическое качество', styleDefault: 'кинематографический реалистичный стиль',
     chainingMode: 'Связывание', modeKeyframes: 'keyframes', modeTi2vid: 'ti2vid', modeNone: 'none',
     referenceImage: 'Референс', refDescription: 'Все сцены используют это изображение.',
     customEndFrames: 'Финальные кадры', enableCustomEndFrames: 'Включить',
@@ -676,6 +679,7 @@ const T = {
     taskName: 'タスク名', taskNamePlaceholder: '任意',
     ideaLabel: 'アイデア', ideaPlaceholder: 'ストーリーを記述...',
     userRequirement: '要件', visualStyle: 'スタイル',
+    requirementDefault: '3シーン、各5秒、映画品質', styleDefault: '映画のようなリアルなスタイル',
     chainingMode: '連鎖', modeKeyframes: 'keyframes', modeTi2vid: 'ti2vid', modeNone: 'none',
     referenceImage: '参照画像', refDescription: '全シーンの視覚アンカー。',
     customEndFrames: '最終フレーム', enableCustomEndFrames: '有効化',
@@ -728,6 +732,7 @@ const T = {
     taskName: '작업 이름', taskNamePlaceholder: '선택사항',
     ideaLabel: '아이디어', ideaPlaceholder: '스토리를 설명하세요...',
     userRequirement: '요구사항', visualStyle: '스타일',
+    requirementDefault: '3개 장면, 각 5초, 영화 품질', styleDefault: '영화 같은 사실적인 스타일',
     chainingMode: '체인', modeKeyframes: 'keyframes', modeTi2vid: 'ti2vid', modeNone: 'none',
     referenceImage: '참조 이미지', refDescription: '모든 장면의 시각 기준.',
     customEndFrames: '엔드 프레임', enableCustomEndFrames: '활성화',
@@ -780,6 +785,7 @@ const T = {
     taskName: 'Nama Tugas', taskNamePlaceholder: 'Pilihan',
     ideaLabel: 'Idea', ideaPlaceholder: 'Terangkan cerita anda...',
     userRequirement: 'Keperluan', visualStyle: 'Gaya',
+    requirementDefault: '3 babak, 5 saat setiap satu, kualiti sinematik', styleDefault: 'gaya realistik sinematik',
     chainingMode: 'Rantai', modeKeyframes: 'keyframes', modeTi2vid: 'ti2vid', modeNone: 'none',
     referenceImage: 'Imej Rujukan', refDescription: 'Semua babak guna imej ini.',
     customEndFrames: 'Bingkai Akhir', enableCustomEndFrames: 'Aktifkan',
@@ -832,6 +838,7 @@ const T = {
     taskName: 'Nama Tugas', taskNamePlaceholder: 'Opsional',
     ideaLabel: 'Ide', ideaPlaceholder: 'Jelaskan cerita Anda...',
     userRequirement: 'Persyaratan', visualStyle: 'Gaya',
+    requirementDefault: '3 adegan, masing-masing 5 detik, kualitas sinematik', styleDefault: 'gaya realistis sinematik',
     chainingMode: 'Rantai', modeKeyframes: 'keyframes', modeTi2vid: 'ti2vid', modeNone: 'none',
     referenceImage: 'Gambar Referensi', refDescription: 'Semua adegan pakai gambar ini.',
     customEndFrames: 'Bingkai Akhir', enableCustomEndFrames: 'Aktifkan',
@@ -909,6 +916,17 @@ function applyLanguage(lang) {
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     el.placeholder = t(el.dataset.i18nPlaceholder);
   });
+  // 更新"用户要求"和"视觉风格"默认值（仅在用户未修改时）
+  const updateDefault = (inputId, i18nKey) => {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const allDefaults = new Set(Object.values(T).map(l => l[i18nKey]).filter(Boolean));
+    if (allDefaults.has(el.value) || el.value === '') {
+      el.value = t(i18nKey);
+    }
+  };
+  updateDefault('c_requirement', 'requirementDefault');
+  updateDefault('c_style', 'styleDefault');
 }
 
 function switchLang(lang) { applyLanguage(lang); }

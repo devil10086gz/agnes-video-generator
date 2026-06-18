@@ -288,14 +288,43 @@ async def serve_video(task_id: str):
 # ═══════════════════════════════════════════════════
 
 
+# 时长提取 regex 模式（支持 7 种语言）
+_DURATION_PATTERNS = [
+    # 中文
+    r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)',
+    r'(\d+)\s*(?:秒|s)\s*(?:每|/)',
+    # 日文
+    r'各\s*(\d+)\s*秒',
+    # 英文
+    r'(\d+)\s*(?:seconds?|secs?|s)\s*(?:each|per)',
+    r'(?:each|per)\s*(?:scene)?\s*(\d+)\s*(?:seconds?|secs?|s)',
+    # 韩文
+    r'각\s*(\d+)\s*초',
+    # 俄文
+    r'по\s*(\d+)\s*секунд',
+    # 马来/印尼
+    r'(\d+)\s*(?:saat|detik)\s*(?:setiap|masing)',
+    r'(?:setiap|masing)\s*(?:satu\s+)?(\d+)\s*(?:saat|detik)',
+    # 通用回退
+    r'(\d+)\s*(?:秒|seconds?|secs?|초|секунд|saat|detik|s)\b',
+]
+
+
 def _parse_duration(user_requirement: str) -> int:
-    match = re.search(r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
-    if match:
-        return int(match.group(1))
-    match = re.search(r'(\d+)\s*(?:秒|s)\s*(?:每|/)', user_requirement)
-    if match:
-        return int(match.group(1))
+    """从 user_requirement 中提取时长。支持 7 种语言。"""
+    for pattern in _DURATION_PATTERNS:
+        match = re.search(pattern, user_requirement, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
     return 5
+
+
+def _has_explicit_duration(user_requirement: str) -> bool:
+    """检查 user_requirement 中是否显式提到了时长。支持 7 种语言。"""
+    for pattern in _DURATION_PATTERNS:
+        if re.search(pattern, user_requirement, re.IGNORECASE):
+            return True
+    return False
 
 
 def _make_progress_callback(task_id: str, ws: Optional[WebSocket] = None):
@@ -456,9 +485,9 @@ async def create_creative_task(
     reference_image: UploadFile = File(None),
     end_frame_images: list = None,
     use_custom_end_frames: bool = Form(False),
-    generate_end_frames_from_ref: bool = Form(False),
+    generate_end_frames_from_ref: bool = Form(True),
     # v2.0 音频配置
-    audio_enabled: bool = Form(True),
+    audio_enabled: bool = Form(False),
     audio_voice: str = Form("zh-CN-XiaoxiaoNeural"),
     audio_rate: str = Form("+0%"),
     subtitle_font: str = Form("STHeitiMedium.ttc"),
@@ -480,8 +509,7 @@ async def create_creative_task(
 
     # 解析时长：user_requirement 中显式提到时长时用它，否则用 video_duration 参数
     parsed_duration = _parse_duration(user_requirement)
-    req_has_explicit_duration = bool(re.search(r'(?:每个场景|每段|每节|每个|每)(?:约)?(\d+)\s*(?:秒|s)', user_requirement)
-                                     or re.search(r'(\d+)\s*(?:秒|s)\s*(?:每|/)', user_requirement))
+    req_has_explicit_duration = _has_explicit_duration(user_requirement)
     if not req_has_explicit_duration and video_duration > 0:
         parsed_duration = video_duration
 
@@ -623,7 +651,7 @@ async def create_task_legacy(
     reference_image: UploadFile = File(None),
     end_frame_images: list = None,
     use_custom_end_frames: bool = Form(False),
-    generate_end_frames_from_ref: bool = Form(False),
+    generate_end_frames_from_ref: bool = Form(True),
 ):
     """向后兼容旧端点，映射到 create_creative_task。"""
     return await create_creative_task(
@@ -639,7 +667,7 @@ async def create_task_legacy(
         use_custom_end_frames=use_custom_end_frames,
         generate_end_frames_from_ref=generate_end_frames_from_ref,
         # 提供音频/字幕默认值（旧端点不传这些参数）
-        audio_enabled=True,
+        audio_enabled=False,
         audio_voice="zh-CN-XiaoxiaoNeural",
         audio_rate="+0%",
         subtitle_font="STHeitiMedium.ttc",
