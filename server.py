@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import signal
+import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -136,8 +137,18 @@ async def lifespan(app: FastAPI):
                         data = json.load(f)
                     if data.get("status") == "running":
                         data["status"] = "pending"
-                        with open(task_file, "w") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        # H5: 原子写（临时文件 + os.replace），避免写入中途崩溃损坏 JSON
+                        tmp_fd, tmp_path = tempfile.mkstemp(
+                            dir=os.path.join(working_dir, name), suffix=".tmp"
+                        )
+                        try:
+                            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                                json.dump(data, f, ensure_ascii=False, indent=2)
+                            os.replace(tmp_path, task_file)
+                        except Exception:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                            raise
                         logger.info(f"[Startup] Reset stale running task {name} -> pending")
                 except Exception as e:
                     logger.debug(f"[Startup] Failed to reset stale task {name}: {e}")
@@ -443,6 +454,21 @@ async def create_simple_task(
     if not api_key:
         raise HTTPException(status_code=400, detail="请先配置 API Key")
 
+    # P7: 参数校验
+    _VALID_MODES = {"t2v", "i2v", "ti2vid", "keyframes"}
+    if mode not in _VALID_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode 必须为 {_VALID_MODES} 之一，当前: {mode}",
+        )
+    if duration not in DURATION_FRAME_MAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"duration 必须为 {sorted(DURATION_FRAME_MAP.keys())} 之一，当前: {duration}",
+        )
+    if len(prompt) > 5000:
+        raise HTTPException(status_code=422, detail="prompt 最多 5000 字符")
+
     task_id = uuid.uuid4().hex[:12]
     dir_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_id}"
 
@@ -522,6 +548,12 @@ async def create_creative_task(
     api_key = get_api_key()
     if not api_key:
         raise HTTPException(status_code=400, detail="请先配置 API Key")
+
+    # P7: 参数校验
+    if len(idea) > 10000:
+        raise HTTPException(status_code=422, detail="idea 最多 10000 字符")
+    if video_duration < 1 or video_duration > 30:
+        raise HTTPException(status_code=422, detail="video_duration 范围 1-30 秒")
 
     task_id = uuid.uuid4().hex[:12]
     name = creative_name.strip() if creative_name else f"video_{task_id}"
@@ -625,6 +657,9 @@ async def create_manuscript_task(
 
     if not manuscript_text.strip():
         raise HTTPException(status_code=400, detail="稿件内容不能为空")
+    # P7: 文本长度上限
+    if len(manuscript_text) > 50000:
+        raise HTTPException(status_code=422, detail="稿件文本最多 50000 字符")
 
     task_id = uuid.uuid4().hex[:12]
     name = creative_name.strip() if creative_name else f"manuscript_{task_id}"
