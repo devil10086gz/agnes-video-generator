@@ -97,6 +97,7 @@ curl -s http://localhost:8765/api/tasks | python3 -m json.tool
 .venv/bin/python -m py_compile core/api/agnes_chat.py
 .venv/bin/python -m py_compile core/api/agnes_image.py
 .venv/bin/python -m py_compile core/api/agnes_video.py
+.venv/bin/python -m py_compile core/api/rate_limiter.py
 .venv/bin/python -m py_compile core/audio/tts.py
 .venv/bin/python -m py_compile core/audio/subtitle.py
 .venv/bin/python -m py_compile core/compositor/concatenator.py
@@ -110,6 +111,7 @@ curl -s http://localhost:8765/api/tasks | python3 -m json.tool
 .venv/bin/python -c "from core.api.agnes_video import AgnesVideoAPI; print('AgnesVideoAPI OK')"
 .venv/bin/python -c "from core.api.agnes_image import AgnesImageAPI; print('AgnesImageAPI OK')"
 .venv/bin/python -c "from core.api.agnes_chat import AgnesChatAPI; print('AgnesChatAPI OK')"
+.venv/bin/python -c "from core.api.rate_limiter import get_rate_limiter; print('RateLimiter OK')"
 .venv/bin/python -c "from core.audio.tts import EdgeTTSEngine, SilentTTSEngine; print('TTS OK')"
 .venv/bin/python -c "from core.audio.subtitle import SubtitleGenerator; print('Subtitle OK')"
 .venv/bin/python -c "from core.compositor.concatenator import VideoConcatenator; print('Concatenator OK')"
@@ -258,7 +260,8 @@ agnes-video-generator/
 │   │   ├── __init__.py
 │   │   ├── agnes_chat.py             # LLM Chat API（text + multimodal + JSON mode）
 │   │   ├── agnes_image.py            # 图片生成 API（t2i + i2i + ref image）
-│   │   └── agnes_video.py            # 视频生成 API（t2v/i2v/ti2vid/keyframes + 轮询 + 重试）
+│   │   ├── agnes_video.py            # 视频生成 API（t2v/i2v/ti2vid/keyframes + 轮询 + 重试）
+│   │   └── rate_limiter.py           # 全局令牌桶限速器（20 次/分钟，Chat+Image+Video 共享）
 │   │
 │   ├── audio/
 │   │   ├── __init__.py
@@ -471,16 +474,19 @@ python scripts/regression_runner.py --quick
 | `[AgnesImage]` | agnes_image.py |
 | `[AgnesVideo]` | agnes_video.py |
 | `[AgnesChat]` | agnes_chat.py |
+| `[RateLimiter]` | rate_limiter.py |
 | `[TaskManager]` | task_manager.py |
 | `[Screenwriter]` | screenwriter.py |
 
-### 8.2 错误处理
+### 8.2 错误处理与全局限速
 
 | 场景 | 策略 |
 |------|------|
-| LLM 调用 | 重试 3 次，间隔 15s 递增 |
-| 视频提交 | 重试 5 次，间隔 30s 递增 |
-| 视频轮询 | 间隔 15s，每 10 次输出日志 |
+| 全局限速 | `core/api/rate_limiter.py` 令牌桶（16 次/分钟，留 20% 余量），Chat+Image+Video 共享 |
+| LLM Chat | 重试 3 次，间隔 15s 递增；5xx 和 429 均重试 |
+| 图片生成 | 重试 3 次，间隔 20s 递增；5xx 和 429 均重试 |
+| 视频提交 | 重试 5 次，间隔 30s 递增；5xx、429、超时均重试 |
+| 视频轮询 | 间隔 30s，每 10 次输出日志；连续 10 次失败后放弃 |
 | PipelineShutdown | 所有流水线统一处理，落盘当前状态 |
 | TTS 失败 | 降级为静音 + 字幕 |
 
@@ -618,7 +624,11 @@ def resolve_font_path(font: str) -> str:
 | D9 | 字幕多行换行 | 动态计算每行字符数上限，CJK 标点处断行，method="caption" |
 | D10 | 音频叠加方式 | MoneyPrinterTurbo 方式：先拼接再整体叠加，避免 padding 累积 |
 | D11 | TTS 音量补偿 | 自动 2.5 倍放大，补偿 edge_tts 默认低音量 |
+| D12 | 全局 API 限速 | 令牌桶 16 次/分钟（Agnes 限制 20，留 20% 余量），Chat+Image+Video 含轮询共享 |
+| D13 | 429 统一重试 | Chat/Image/Video 三个 API 模块均处理 HTTP 429 限流，指数退避重试 |
+| D14 | 视频轮询间隔 | 30 秒（从 15s 加倍，减少轮询对限速配额消耗） |
+| D15 | 回归续传策略 | 可恢复失败（timeout/API 故障）自动重试，不可恢复（400 提示词错误）跳过 |
 
 ---
 
-*文档版本：v5.0 | 更新日期：2026-06-15 | 阶段：🟢 开发完成（v2.0）— 维护模式*
+*文档版本：v5.1 | 更新日期：2026-06-19 | 阶段：🟢 开发完成（v2.0）— 维护模式*

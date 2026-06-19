@@ -367,9 +367,41 @@ class ReportManager:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.path)
 
-    def should_run(self, id_: str) -> bool:
-        st = self.data["scenarios"][id_]["status"]
-        return st not in ("completed", "skipped")
+    def should_run(self, id_: str, resume: bool = False) -> bool:
+        """判断场景是否应该执行。
+
+        Args:
+            id_: 场景 ID。
+            resume: 是否为续传模式。
+
+        Returns:
+            True 表示应该执行。
+
+        逻辑:
+          - completed / skipped → 始终跳过
+          - pending / submitted / running → 始终执行
+          - failed + resume 模式:
+            - 错误信息匹配不可恢复模式 → 跳过
+            - 否则 → 重新提交
+          - failed + 非 resume → 执行（首次运行不会走到这里）
+        """
+        sc = self.data["scenarios"][id_]
+        st = sc["status"]
+        if st in ("completed", "skipped"):
+            return False
+        if st == "failed" and resume:
+            errors = sc.get("errors", [])
+            err_text = " ".join(str(e) for e in errors).lower()
+            for pat in _NON_RETRYABLE_PATTERNS:
+                if pat.lower() in err_text:
+                    logger.info(
+                        f"[{id_}] 不可恢复错误，跳过: {errors[0] if errors else '?'}"
+                    )
+                    return False
+            # 可恢复的失败 → 重新提交
+            logger.info(f"[{id_}] 可恢复失败，将重新提交: {errors[0] if errors else '?'}")
+            return True
+        return True
 
     def print_summary(self):
         s = self.data["summary"]
@@ -1538,11 +1570,17 @@ async def _e8_e9_check(action: str) -> tuple:
 # ═══════════════════════════════════════════════════
 
 async def main(resume: bool = False, auto_start: bool = False,
-               quick: bool = False, cleanup: bool = False):
+               quick: bool = False, cleanup: bool = False,
+               poll_interval: int = POLL_INTERVAL):
+    global POLL_INTERVAL
+    POLL_INTERVAL = poll_interval
+
     logger.info("=" * 56)
     logger.info("  Agnes Video Generator v2.0 — 大版本回归测试")
-    logger.info(f"  并行度上限: {MAX_CONCURRENT_WEIGHT}/{AGNES_RATE_LIMIT}/min (权重/Agnes API)")
-    resume and logger.info(f"  模式: 恢复 (自动跳过已完成场景)")
+    logger.info(f"  并行度上限: {MAX_CONCURRENT_WEIGHT} 权重并发")
+    logger.info(f"  服务端限速: {AGNES_RATE_LIMIT} 次/分钟 (令牌桶, 含轮询)")
+    logger.info(f"  轮询间隔: {POLL_INTERVAL}s")
+    resume and logger.info(f"  模式: 续传 (跳过已完成 + 不可恢复失败，重试可恢复失败)")
     quick and logger.info(f"  模式: 快速验证 (跳过运行)")
     cleanup and logger.info(f"  模式: 清理回归产物")
     logger.info("=" * 56)
@@ -1609,13 +1647,26 @@ async def main(resume: bool = False, auto_start: bool = False,
         report.print_summary()
         return 0
 
-    pending = [sc for sc in SCENARIO_DEFS if report.should_run(sc.id)]
-    skipped = [sc for sc in SCENARIO_DEFS if not report.should_run(sc.id)]
+    pending = [sc for sc in SCENARIO_DEFS if report.should_run(sc.id, resume=resume)]
+    skipped = [sc for sc in SCENARIO_DEFS if not report.should_run(sc.id, resume=resume)]
 
     if skipped:
-        logger.info(f"跳过 {len(skipped)}: {', '.join(s.id for s in skipped)}")
+        skip_ids = ', '.join(s.id for s in skipped)
+        skip_reasons = []
+        for s in skipped:
+            st = report.data["scenarios"][s.id]["status"]
+            if st == "completed":
+                skip_reasons.append(f"{s.id}(已完成)")
+            elif st == "skipped":
+                skip_reasons.append(f"{s.id}(已跳过)")
+            elif st == "failed":
+                skip_reasons.append(f"{s.id}(不可恢复)")
+            else:
+                skip_reasons.append(f"{s.id}({st})")
+        logger.info(f"跳过 {len(skipped)}: {', '.join(skip_reasons)}")
     if not pending:
         logger.info("无待运行场景")
+        # 所有场景都已完成或不可恢复，直接生成报告
     else:
         logger.info(f"并发 {len(pending)} 场景 (max_weight={MAX_CONCURRENT_WEIGHT})")
         sema = WeightedSemaphore(MAX_CONCURRENT_WEIGHT)
@@ -1652,6 +1703,8 @@ if __name__ == "__main__":
                    help="仅验证已有产物")
     p.add_argument("--cleanup", action="store_true",
                    help="清理回归测试产物（报告、日志、任务目录）")
+    p.add_argument("--poll-interval", type=int, default=POLL_INTERVAL,
+                   help=f"任务状态轮询间隔秒数 (默认 {POLL_INTERVAL})")
     args = p.parse_args()
 
     if args.quick and not args.resume:
@@ -1662,4 +1715,5 @@ if __name__ == "__main__":
         auto_start=args.auto_start,
         quick=args.quick,
         cleanup=args.cleanup,
+        poll_interval=args.poll_interval,
     )))
