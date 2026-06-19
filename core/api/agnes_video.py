@@ -11,6 +11,7 @@ from typing import List, Optional
 
 import requests
 
+from core.api.rate_limiter import get_rate_limiter
 from utils.video import download_video
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,7 @@ class AgnesVideoAPI:
                     },
                 }
                 logger.info(f"[AgnesVideo] Uploading image to hosted URL (attempt {attempt + 1}/{retries})...")
+                await asyncio.to_thread(get_rate_limiter().acquire)
                 resp = await asyncio.to_thread(
                     requests.post,
                     f"{BASE_URL}/images/generations",
@@ -200,7 +202,7 @@ class AgnesVideoAPI:
                 best = (nf, fr)
         return best or DURATION_PRESETS[5]
 
-    async def _poll_task(self, video_id: str, interval: int = 15,
+    async def _poll_task(self, video_id: str, interval: int = 30,
                           max_poll_duration: int = 1800,
                           max_consecutive_failures: int = 10,
                           progress_callback=None) -> dict:
@@ -226,6 +228,8 @@ class AgnesVideoAPI:
             try:
                 if poll_count % 10 == 0:
                     logger.info(f"[AgnesVideo] Polling video {video_id[:16]}... (poll #{poll_count + 1}, elapsed {elapsed:.0f}s)")
+                # 全局限速：每次轮询都消耗一个令牌
+                await asyncio.to_thread(get_rate_limiter().acquire)
                 # M2: 用 wait_for 包裹以支持取消
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -275,6 +279,8 @@ class AgnesVideoAPI:
                 raise RuntimeError("Video generation cancelled by user")
             try:
                 logger.info(f"[AgnesVideo] Submitting {mode_desc} (attempt {attempt + 1}/{self.max_retries})...")
+                # 全局限速：在发起提交请求前获取令牌
+                await asyncio.to_thread(get_rate_limiter().acquire)
                 # M2: 缩短读超时从 180s 到 60s，使 stop() 更快生效
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(

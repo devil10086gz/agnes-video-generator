@@ -72,17 +72,19 @@ class VideoConcatenator:
             )
         finally:
             # P6: 关闭所有资源（clips + resized_clips + final）
+            # 注意：不要用 `if c not in clips` 来去重 —— moviepy 2.x 的
+            # Clip.__eq__ 逐帧比较，write_videofile 后 readers 处于已消费
+            # 状态会抛 AttributeError。close() 本身是幂等的，直接全量关闭。
             for c in clips:
                 try:
                     c.close()
                 except Exception:
                     pass
             for c in resized_clips:
-                if c not in clips:  # 避免重复 close
-                    try:
-                        c.close()
-                    except Exception:
-                        pass
+                try:
+                    c.close()
+                except Exception:
+                    pass
             if final is not None:
                 try:
                     final.close()

@@ -15,6 +15,8 @@ from typing import List
 
 import requests
 
+from core.api.rate_limiter import get_rate_limiter
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://apihub.agnes-ai.com/v1"
@@ -68,14 +70,15 @@ class AgnesChatAPI:
 
     @staticmethod
     def _should_retry(resp: requests.Response) -> bool:
-        """判断 HTTP 响应是否应重试（5xx 重试，4xx 不重试）。"""
-        return resp.status_code >= 500
+        """判断 HTTP 响应是否应重试（5xx 和 429 重试，4xx 不重试）。"""
+        return resp.status_code >= 500 or resp.status_code == 429
 
     def _request_with_retry(self, payload: dict, timeout: int = 120) -> dict:
         """带重试的 API 请求。
 
-        对 5xx/超时/连接错误进行最多 3 次指数退避重试。
-        4xx 错误直接抛出不重试。
+        对 5xx/429/超时/连接错误进行最多 3 次指数退避重试。
+        4xx 错误（非 429）直接抛出不重试。
+        每次请求前通过全局限速器控制调用频率。
 
         Args:
             payload: 请求 JSON body。
@@ -90,6 +93,7 @@ class AgnesChatAPI:
         last_exc = None
         for attempt in range(_MAX_RETRIES):
             try:
+                get_rate_limiter().acquire()
                 resp = requests.post(
                     f"{BASE_URL}/chat/completions",
                     headers=self.headers,
@@ -229,111 +233,4 @@ class AgnesChatAPI:
             },
             timeout=300,
         )
-        return data["choices"][0]["message"]["content"]
-"""core.api.agnes_chat — Agnes Chat API 封装（从 core/screenwriter.py 提取）"""
-
-import base64
-import json
-import logging
-import mimetypes
-import os
-from typing import List
-
-import requests
-
-logger = logging.getLogger(__name__)
-
-BASE_URL = "https://apihub.agnes-ai.com/v1"
-
-
-class AgnesChatAPI:
-    """Agnes LLM Chat API 封装（text + multimodal）。"""
-
-    def __init__(self, api_key: str, model: str = "agnes-2.0-flash"):
-        self.api_key = api_key
-        self.model = model
-        self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-    def _image_to_b64_uri(self, path: str) -> str:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        mime = mimetypes.guess_type(path)[0] or "image/png"
-        return f"data:{mime};base64,{b64}"
-
-    def chat(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
-        """纯文本 Chat 调用。"""
-        logger.info(f"[AgnesChat] Calling chat ({self.model}), prompt: {len(user_prompt)} chars...")
-        resp = requests.post(
-            f"{BASE_URL}/chat/completions",
-            headers=self.headers,
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.7,
-                "max_tokens": max_tokens,
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-    def chat_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> dict:
-        """Chat 调用并解析 JSON 响应。"""
-        content = self.chat(system_prompt, user_prompt, max_tokens=max_tokens)
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content[:-3]
-        return json.loads(content)
-
-    def chat_multimodal(
-        self,
-        system_prompt: str,
-        text_prompt: str,
-        image_paths: List[str],
-        max_tokens: int = 4096,
-    ) -> str:
-        """多模态 Chat 调用（文本 + 图片）。"""
-        messages = [{"role": "system", "content": system_prompt}]
-
-        user_content = [{"type": "text", "text": text_prompt}]
-        for img_path in image_paths:
-            if img_path.startswith(("http://", "https://")):
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": img_path},
-                })
-            elif os.path.exists(img_path):
-                b64_uri = self._image_to_b64_uri(img_path)
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": b64_uri},
-                })
-        messages.append({"role": "user", "content": user_content})
-
-        logger.info(
-            f"[AgnesChat] Calling multimodal ({self.model}), "
-            f"{len(image_paths)} image(s), prompt: {len(text_prompt)} chars..."
-        )
-        resp = requests.post(
-            f"{BASE_URL}/chat/completions",
-            headers=self.headers,
-            json={
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": max_tokens,
-            },
-            timeout=300,
-        )
-        resp.raise_for_status()
-        data = resp.json()
         return data["choices"][0]["message"]["content"]

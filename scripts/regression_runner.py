@@ -4,24 +4,22 @@ Agnes Video Generator v2.0 — 大版本回归测试脚本 (并发版)
 
 用法:
   python scripts/regression_runner.py                # 从头运行
-  python scripts/regression_runner.py --resume       # 从已有报告继续
+  python scripts/regression_runner.py --resume       # 续传：跳过已完成，重试可恢复的失败
   python scripts/regression_runner.py --quick        # 跳过运行，只验证产物
   python scripts/regression_runner.py --cleanup      # 清理回归产物（报告+日志+任务目录）
 
 机制:
   - 10 个测试场景通过 asyncio 并发执行
-  - 加权信号量控制并行度，保证 Agnes API 总调用 ≤ 20 次/分钟
+  - 加权信号量控制并发提交数（≤ 10 权重并发）
+  - 服务端全局令牌桶限速器（core/api/rate_limiter.py）确保 Agnes API
+    总调用 ≤ 20 次/分钟（含 Chat + Image + Video 提交 + Video 轮询）
   - 测试报告在 docs/regression_report.json 增量写入，中断后可续传
 
-并行度评估:
-  ┌─────────────┬──────┬──────────────────────────────┐
-  │ 类型         │ 权重  │ Agnes API 调用特征           │
-  ├─────────────┼──────┼──────────────────────────────┤
-  │ 简单 (S1-S3) │  1   │ 1 submit + 轮询~4次/分钟     │
-  │ 创意 (C1-C4) │  3-4 │ Chat+N场景Image+Video+轮询   │
-  │ 稿件 (M1-M3) │  4-5 │ Chat*段数+Image*段数+轮询    │
-  └─────────────┴──────┴──────────────────────────────┘
-  总权重上限 = 10 (50% 余量，确保峰值不超 20/分钟)
+续传策略:
+  - completed / skipped → 跳过
+  - failed（可恢复错误：timeout / API 故障 / 网络错误）→ 重新提交
+  - failed（不可恢复：HTTP 400 提示词错误 / 参数校验失败）→ 跳过
+  - submitted / running（中断遗留）→ 尝试续传原 task_id
 """
 
 import asyncio
@@ -72,9 +70,21 @@ MAX_CONCURRENT_WEIGHT = AGNES_RATE_LIMIT // 2
 TIMEOUT_SIMPLE = 30 * 60
 TIMEOUT_CREATIVE = 120 * 60
 TIMEOUT_MANUSCRIPT = 60 * 60
-# 任务状态轮询间隔（区别于 pipeline 内部 15s 的 Agnes Video API 轮询）
-POLL_INTERVAL = 20
+# 任务状态轮询间隔（区别于 pipeline 内部 30s 的 Agnes Video API 轮询）
+POLL_INTERVAL = 30
 HEALTH_CHECK_RETRIES = 12
+
+# 不可恢复的错误模式：这些错误表示任务本身有问题（如提示词不合规、参数错误），
+# 重新提交也会失败，因此续传时跳过。
+_NON_RETRYABLE_PATTERNS = (
+    "bad_prompt",
+    "invalid_prompt",
+    "status=failed: 400",
+    "status=failed: Bad Request",
+    "HTTP 400",
+    "prompt_violation",
+    "content_policy",
+)
 
 logging.basicConfig(
     level=logging.INFO,
