@@ -2,13 +2,16 @@
 
 import asyncio
 import base64
+import json
 import logging
 import mimetypes
 import os
+import time
 from typing import List, Optional
 
 import requests
 
+from core.api.rate_limiter import get_rate_limiter
 from utils.video import download_video
 
 logger = logging.getLogger(__name__)
@@ -74,21 +77,37 @@ class AgnesVideoAPI:
             return ref
         if os.path.exists(ref):
             url_file = ref + ".url"
+            # P12: 缓存过期检查（预签名 URL 有效期有限，超过 1 小时则重新上传）
+            _URL_CACHE_MAX_AGE = 3600  # 1 小时
             if os.path.exists(url_file):
                 try:
                     with open(url_file, "r") as f:
-                        cached_url = f.read().strip()
-                    if cached_url:
-                        logger.info(f"[AgnesVideo] Using cached hosted URL: {cached_url[:80]}...")
+                        cache_data = json.loads(f.read())
+                    cached_url = cache_data.get("url", "")
+                    cached_ts = cache_data.get("ts", 0)
+                    age = time.time() - cached_ts
+                    if cached_url and age < _URL_CACHE_MAX_AGE:
+                        logger.info(
+                            f"[AgnesVideo] Using cached hosted URL (age={age:.0f}s): "
+                            f"{cached_url[:80]}..."
+                        )
                         return cached_url
-                except Exception as e:
+                    if cached_url:
+                        logger.info(
+                            f"[AgnesVideo] Cached URL expired (age={age:.0f}s), re-uploading"
+                        )
+                except (json.JSONDecodeError, OSError) as e:
                     logger.debug(f"[AgnesVideo] Failed to read cached URL: {e}")
+                # 兼容旧格式纯文本缓存文件
+                except Exception as e:
+                    logger.debug(f"[AgnesVideo] Failed to read legacy URL cache: {e}")
             url = await self._upload_image_to_url(ref)
             if url:
                 try:
+                    cache_data = {"url": url, "ts": time.time()}
                     tmp_file = url_file + ".tmp"
                     with open(tmp_file, "w") as f:
-                        f.write(url)
+                        json.dump(cache_data, f)
                         f.flush()
                         os.fsync(f.fileno())
                     os.replace(tmp_file, url_file)
@@ -117,6 +136,7 @@ class AgnesVideoAPI:
                     },
                 }
                 logger.info(f"[AgnesVideo] Uploading image to hosted URL (attempt {attempt + 1}/{retries})...")
+                await asyncio.to_thread(get_rate_limiter().acquire)
                 resp = await asyncio.to_thread(
                     requests.post,
                     f"{BASE_URL}/images/generations",
@@ -182,7 +202,7 @@ class AgnesVideoAPI:
                 best = (nf, fr)
         return best or DURATION_PRESETS[5]
 
-    async def _poll_task(self, video_id: str, interval: int = 15,
+    async def _poll_task(self, video_id: str, interval: int = 30,
                           max_poll_duration: int = 1800,
                           max_consecutive_failures: int = 10,
                           progress_callback=None) -> dict:
@@ -208,6 +228,8 @@ class AgnesVideoAPI:
             try:
                 if poll_count % 10 == 0:
                     logger.info(f"[AgnesVideo] Polling video {video_id[:16]}... (poll #{poll_count + 1}, elapsed {elapsed:.0f}s)")
+                # 全局限速：每次轮询都消耗一个令牌
+                await asyncio.to_thread(get_rate_limiter().acquire)
                 # M2: 用 wait_for 包裹以支持取消
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -257,6 +279,8 @@ class AgnesVideoAPI:
                 raise RuntimeError("Video generation cancelled by user")
             try:
                 logger.info(f"[AgnesVideo] Submitting {mode_desc} (attempt {attempt + 1}/{self.max_retries})...")
+                # 全局限速：在发起提交请求前获取令牌
+                await asyncio.to_thread(get_rate_limiter().acquire)
                 # M2: 缩短读超时从 180s 到 60s，使 stop() 更快生效
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(

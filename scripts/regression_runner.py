@@ -4,24 +4,22 @@ Agnes Video Generator v2.0 — 大版本回归测试脚本 (并发版)
 
 用法:
   python scripts/regression_runner.py                # 从头运行
-  python scripts/regression_runner.py --resume       # 从已有报告继续
+  python scripts/regression_runner.py --resume       # 续传：跳过已完成，重试可恢复的失败
   python scripts/regression_runner.py --quick        # 跳过运行，只验证产物
   python scripts/regression_runner.py --cleanup      # 清理回归产物（报告+日志+任务目录）
 
 机制:
   - 10 个测试场景通过 asyncio 并发执行
-  - 加权信号量控制并行度，保证 Agnes API 总调用 ≤ 20 次/分钟
+  - 加权信号量控制并发提交数（≤ 10 权重并发）
+  - 服务端全局令牌桶限速器（core/api/rate_limiter.py）确保 Agnes API
+    总调用 ≤ 20 次/分钟（含 Chat + Image + Video 提交 + Video 轮询）
   - 测试报告在 docs/regression_report.json 增量写入，中断后可续传
 
-并行度评估:
-  ┌─────────────┬──────┬──────────────────────────────┐
-  │ 类型         │ 权重  │ Agnes API 调用特征           │
-  ├─────────────┼──────┼──────────────────────────────┤
-  │ 简单 (S1-S3) │  1   │ 1 submit + 轮询~4次/分钟     │
-  │ 创意 (C1-C4) │  3-4 │ Chat+N场景Image+Video+轮询   │
-  │ 稿件 (M1-M3) │  4-5 │ Chat*段数+Image*段数+轮询    │
-  └─────────────┴──────┴──────────────────────────────┘
-  总权重上限 = 10 (50% 余量，确保峰值不超 20/分钟)
+续传策略:
+  - completed / skipped → 跳过
+  - failed（可恢复错误：timeout / API 故障 / 网络错误）→ 重新提交
+  - failed（不可恢复：HTTP 400 提示词错误 / 参数校验失败）→ 跳过
+  - submitted / running（中断遗留）→ 尝试续传原 task_id
 """
 
 import asyncio
@@ -72,15 +70,36 @@ MAX_CONCURRENT_WEIGHT = AGNES_RATE_LIMIT // 2
 TIMEOUT_SIMPLE = 30 * 60
 TIMEOUT_CREATIVE = 120 * 60
 TIMEOUT_MANUSCRIPT = 60 * 60
-# 任务状态轮询间隔（区别于 pipeline 内部 15s 的 Agnes Video API 轮询）
-POLL_INTERVAL = 20
+# 任务状态轮询间隔（区别于 pipeline 内部 30s 的 Agnes Video API 轮询）
+POLL_INTERVAL = 30
 HEALTH_CHECK_RETRIES = 12
+
+# 不可恢复的错误模式：这些错误表示任务本身有问题（如提示词不合规、参数错误），
+# 重新提交也会失败，因此续传时跳过。
+_NON_RETRYABLE_PATTERNS = (
+    "bad_prompt",
+    "invalid_prompt",
+    "status=failed: 400",
+    "status=failed: Bad Request",
+    "HTTP 400",
+    "prompt_violation",
+    "content_policy",
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [Regression] %(message)s",
 )
 logger = logging.getLogger("RegressionTest")
+
+
+# ═══════════════════════════════════════════════════
+# 自定义异常
+# ═══════════════════════════════════════════════════
+
+class TaskNotFoundError(Exception):
+    """任务已被删除或不存在（HTTP 404）。"""
+    pass
 
 
 # ═══════════════════════════════════════════════════
@@ -108,19 +127,19 @@ SCENARIO_DEFS = [
     # ── 简单视频 ──
     ScenarioConfig("S1", "纯文本 t2v", "simple",
         "/api/tasks/simple",
-        {"prompt": "一只猫在花园里追逐蝴蝶，慢动作，柔和的阳光透过树叶",
+        {"prompt": "春天花园里花朵盛开，阳光柔和",
          "mode": "t2v", "duration": 5},
         TIMEOUT_SIMPLE, SCENARIO_WEIGHTS["S1"]),
 
     ScenarioConfig("S2", "图生视频 ti2vid", "simple",
         "/api/tasks/simple",
-        {"prompt": "一只猫在花园里追逐蝴蝶，慢动作，柔和的阳光透过树叶",
+        {"prompt": "春天花园里花朵盛开，阳光柔和",
          "mode": "ti2vid", "duration": 5},
         TIMEOUT_SIMPLE, SCENARIO_WEIGHTS["S2"], requires_ref_image=True),
 
     ScenarioConfig("S3", "关键帧 keyframes", "simple",
         "/api/tasks/simple",
-        {"prompt": "一只猫在花园里追逐蝴蝶，慢动作，柔和的阳光透过树叶",
+        {"prompt": "春天花园里花朵盛开，阳光柔和",
          "mode": "keyframes", "duration": 5},
         TIMEOUT_SIMPLE, SCENARIO_WEIGHTS["S3"],
         requires_ref_image=True, requires_end_image=True),
@@ -128,27 +147,27 @@ SCENARIO_DEFS = [
     # ── 创意视频（主测无配音，三种场景模式 + 一个配音验证）──
     ScenarioConfig("C1", "纯文字+独立+无配音", "creative",
         "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "none",
+        {"idea": "清晨小镇溪边的宁静风景",
+         "user_requirement": "3个场景，每个场景5秒，写实风格",
+         "style": "写实风格", "chaining_mode": "none",
          "video_duration": 5,
          "audio_enabled": False},
         TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C1"]),
 
     ScenarioConfig("C2", "带参考图+关键帧+无配音", "creative",
         "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "keyframes",
+        {"idea": "清晨小镇溪边的宁静风景",
+         "user_requirement": "3个场景，每个场景5秒，写实风格",
+         "style": "写实风格", "chaining_mode": "keyframes",
          "video_duration": 5,
          "audio_enabled": False},
         TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C2"], requires_ref_image=True),
 
     ScenarioConfig("C3", "参考图生成尾帧+关键帧+无配音", "creative",
         "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "keyframes",
+        {"idea": "清晨小镇溪边的宁静风景",
+         "user_requirement": "3个场景，每个场景5秒，写实风格",
+         "style": "写实风格", "chaining_mode": "keyframes",
          "video_duration": 5,
          "audio_enabled": False,
          "use_custom_end_frames": True,
@@ -157,40 +176,46 @@ SCENARIO_DEFS = [
 
     ScenarioConfig("C4", "独立场景+配音字幕验证", "creative",
         "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "none",
+        {"idea": "清晨小镇溪边的宁静风景",
+         "user_requirement": "3个场景，每个场景5秒，写实风格",
+         "style": "写实风格", "chaining_mode": "none",
          "video_duration": 5,
          "audio_enabled": True, "audio_voice": "zh-CN-XiaoxiaoNeural"},
         TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C4"]),
 
     ScenarioConfig("C5", "链式续传 ti2vid + 无配音", "creative",
         "/api/tasks/creative",
-        {"idea": "一只猫在花园里探索的冒险故事",
-         "user_requirement": "3个场景，每个场景5秒，动画风格",
-         "style": "动画风格", "chaining_mode": "ti2vid",
+        {"idea": "清晨小镇溪边的宁静风景",
+         "user_requirement": "3个场景，每个场景5秒，写实风格",
+         "style": "写实风格", "chaining_mode": "ti2vid",
          "video_duration": 5, "audio_enabled": False},
         TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C5"]),
 
     # ── 稿件视频（短文本，激活拆段算法）──
     ScenarioConfig("M1", "短稿件+配音", "manuscript",
         "/api/tasks/manuscript",
-        {"manuscript_text": "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，"
-         "花朵盛开，空气中弥漫着花香。小猫跳来跳去，非常开心，尾巴翘得高高的。"
-         "蝴蝶停在一朵花上，小猫悄悄靠近，屏住呼吸。突然蝴蝶飞走了，小猫扑了"
-         "个空，翻了个跟头。它并不气馁，爬起来继续追逐，在花丛中穿梭。最后小猫"
-         "累了，趴在树荫下休息，看着蝴蝶越飞越远。",
+        {"manuscript_text": "清晨的小镇，一条小溪静静流过石桥。"
+         "溪水清澈见底，映着蓝天白云的倒影。"
+         "岸边的柳树轻轻摇摆，叶子随风飘动。"
+         "阳光洒在水面上，泛起点点金光。"
+         "微风吹过，带来泥土和青草的气息。"
+         "远处的屋顶上升起缕缕炊烟，宁静而安详。"
+         "春天来了，古镇的景色越发迷人。"
+         "桃花开满了枝头，柳树抽出嫩绿的新芽。",
          "video_duration": 5, "audio_enabled": True,
          "audio_voice": "zh-CN-XiaoxiaoNeural"},
         TIMEOUT_MANUSCRIPT, SCENARIO_WEIGHTS["M1"]),
 
     ScenarioConfig("M2", "短稿件+自定义字幕", "manuscript",
         "/api/tasks/manuscript",
-        {"manuscript_text": "春天的花园里，一只小猫正在追逐蝴蝶。阳光明媚，"
-         "花朵盛开，空气中弥漫着花香。小猫跳来跳去，非常开心，尾巴翘得高高的。"
-         "蝴蝶停在一朵花上，小猫悄悄靠近，屏住呼吸。突然蝴蝶飞走了，小猫扑了"
-         "个空，翻了个跟头。它并不气馁，爬起来继续追逐，在花丛中穿梭。最后小猫"
-         "累了，趴在树荫下休息，看着蝴蝶越飞越远。",
+        {"manuscript_text": "清晨的小镇，一条小溪静静流过石桥。"
+         "溪水清澈见底，映着蓝天白云的倒影。"
+         "岸边的柳树轻轻摇摆，叶子随风飘动。"
+         "阳光洒在水面上，泛起点点金光。"
+         "微风吹过，带来泥土和青草的气息。"
+         "远处的屋顶上升起缕缕炊烟，宁静而安详。"
+         "春天来了，古镇的景色越发迷人。"
+         "桃花开满了枝头，柳树抽出嫩绿的新芽。",
          "video_duration": 5, "audio_enabled": True,
          "audio_voice": "zh-CN-XiaoxiaoNeural",
          "subtitle_font": "SimHei", "subtitle_color": "yellow",
@@ -348,9 +373,41 @@ class ReportManager:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.path)
 
-    def should_run(self, id_: str) -> bool:
-        st = self.data["scenarios"][id_]["status"]
-        return st not in ("completed", "skipped")
+    def should_run(self, id_: str, resume: bool = False) -> bool:
+        """判断场景是否应该执行。
+
+        Args:
+            id_: 场景 ID。
+            resume: 是否为续传模式。
+
+        Returns:
+            True 表示应该执行。
+
+        逻辑:
+          - completed / skipped → 始终跳过
+          - pending / submitted / running → 始终执行
+          - failed + resume 模式:
+            - 错误信息匹配不可恢复模式 → 跳过
+            - 否则 → 重新提交
+          - failed + 非 resume → 执行（首次运行不会走到这里）
+        """
+        sc = self.data["scenarios"][id_]
+        st = sc["status"]
+        if st in ("completed", "skipped"):
+            return False
+        if st == "failed" and resume:
+            errors = sc.get("errors", [])
+            err_text = " ".join(str(e) for e in errors).lower()
+            for pat in _NON_RETRYABLE_PATTERNS:
+                if pat.lower() in err_text:
+                    logger.info(
+                        f"[{id_}] 不可恢复错误，跳过: {errors[0] if errors else '?'}"
+                    )
+                    return False
+            # 可恢复的失败 → 重新提交
+            logger.info(f"[{id_}] 可恢复失败，将重新提交: {errors[0] if errors else '?'}")
+            return True
+        return True
 
     def print_summary(self):
         s = self.data["summary"]
@@ -781,9 +838,13 @@ async def submit_task(scenario: ScenarioConfig) -> dict:
 
 
 async def get_task_status(task_id: str) -> dict:
-    return await asyncio.to_thread(
-        lambda: requests.get(f"{SERVER_URL}/api/tasks/{task_id}", timeout=10).json()
-    )
+    def _fetch():
+        r = requests.get(f"{SERVER_URL}/api/tasks/{task_id}", timeout=10)
+        if r.status_code == 404:
+            raise TaskNotFoundError(f"Task {task_id} not found (404)")
+        r.raise_for_status()
+        return r.json()
+    return await asyncio.to_thread(_fetch)
 
 
 async def resume_task(task_id: str) -> dict:
@@ -1311,6 +1372,11 @@ async def run_scenario(scenario: ScenarioConfig,
                     logger.info(f"[{scenario.id}] pending...")
                 elif st:
                     logger.info(f"[{scenario.id}] status={st}")
+            except TaskNotFoundError:
+                logger.warning(
+                    f"[{scenario.id}] 任务不存在 (404)，停止轮询: {task_id}")
+                final_status = "task_not_found"
+                break
             except Exception as e:
                 logger.warning(f"[{scenario.id}] 轮询: {e}")
                 await asyncio.sleep(5)
@@ -1510,11 +1576,17 @@ async def _e8_e9_check(action: str) -> tuple:
 # ═══════════════════════════════════════════════════
 
 async def main(resume: bool = False, auto_start: bool = False,
-               quick: bool = False, cleanup: bool = False):
+               quick: bool = False, cleanup: bool = False,
+               poll_interval: int = POLL_INTERVAL):
+    global POLL_INTERVAL
+    POLL_INTERVAL = poll_interval
+
     logger.info("=" * 56)
     logger.info("  Agnes Video Generator v2.0 — 大版本回归测试")
-    logger.info(f"  并行度上限: {MAX_CONCURRENT_WEIGHT}/{AGNES_RATE_LIMIT}/min (权重/Agnes API)")
-    resume and logger.info(f"  模式: 恢复 (自动跳过已完成场景)")
+    logger.info(f"  并行度上限: {MAX_CONCURRENT_WEIGHT} 权重并发")
+    logger.info(f"  服务端限速: {AGNES_RATE_LIMIT} 次/分钟 (令牌桶, 含轮询)")
+    logger.info(f"  轮询间隔: {POLL_INTERVAL}s")
+    resume and logger.info(f"  模式: 续传 (跳过已完成 + 不可恢复失败，重试可恢复失败)")
     quick and logger.info(f"  模式: 快速验证 (跳过运行)")
     cleanup and logger.info(f"  模式: 清理回归产物")
     logger.info("=" * 56)
@@ -1581,13 +1653,26 @@ async def main(resume: bool = False, auto_start: bool = False,
         report.print_summary()
         return 0
 
-    pending = [sc for sc in SCENARIO_DEFS if report.should_run(sc.id)]
-    skipped = [sc for sc in SCENARIO_DEFS if not report.should_run(sc.id)]
+    pending = [sc for sc in SCENARIO_DEFS if report.should_run(sc.id, resume=resume)]
+    skipped = [sc for sc in SCENARIO_DEFS if not report.should_run(sc.id, resume=resume)]
 
     if skipped:
-        logger.info(f"跳过 {len(skipped)}: {', '.join(s.id for s in skipped)}")
+        skip_ids = ', '.join(s.id for s in skipped)
+        skip_reasons = []
+        for s in skipped:
+            st = report.data["scenarios"][s.id]["status"]
+            if st == "completed":
+                skip_reasons.append(f"{s.id}(已完成)")
+            elif st == "skipped":
+                skip_reasons.append(f"{s.id}(已跳过)")
+            elif st == "failed":
+                skip_reasons.append(f"{s.id}(不可恢复)")
+            else:
+                skip_reasons.append(f"{s.id}({st})")
+        logger.info(f"跳过 {len(skipped)}: {', '.join(skip_reasons)}")
     if not pending:
         logger.info("无待运行场景")
+        # 所有场景都已完成或不可恢复，直接生成报告
     else:
         logger.info(f"并发 {len(pending)} 场景 (max_weight={MAX_CONCURRENT_WEIGHT})")
         sema = WeightedSemaphore(MAX_CONCURRENT_WEIGHT)
@@ -1624,6 +1709,8 @@ if __name__ == "__main__":
                    help="仅验证已有产物")
     p.add_argument("--cleanup", action="store_true",
                    help="清理回归测试产物（报告、日志、任务目录）")
+    p.add_argument("--poll-interval", type=int, default=POLL_INTERVAL,
+                   help=f"任务状态轮询间隔秒数 (默认 {POLL_INTERVAL})")
     args = p.parse_args()
 
     if args.quick and not args.resume:
@@ -1634,4 +1721,5 @@ if __name__ == "__main__":
         auto_start=args.auto_start,
         quick=args.quick,
         cleanup=args.cleanup,
+        poll_interval=args.poll_interval,
     )))

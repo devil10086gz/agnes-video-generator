@@ -5,10 +5,12 @@ import base64
 import logging
 import mimetypes
 import os
+import time
 from typing import List, Optional
 
 import requests
 
+from core.api.rate_limiter import get_rate_limiter
 from utils.image import download_image
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,8 @@ class AgnesImageAPI:
         prompt: str,
         reference_image_paths: List[str] = [],
         size: Optional[str] = None,
+        max_retries: int = 3,
+        retry_base_delay: float = 20.0,
         **kwargs,
     ) -> ImageOutput:
         use_i2i = len(reference_image_paths) > 0
@@ -102,23 +106,59 @@ class AgnesImageAPI:
 
         logger.info(f"[AgnesImage] Generating ({'i2i' if use_i2i else 't2i'}): {prompt[:80]}...")
 
-        try:
-            resp = await asyncio.to_thread(
-                requests.post,
-                f"{BASE_URL}/images/generations",
-                headers=self.headers,
-                json=payload,
-                timeout=(30, 120),
-            )
-            resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            error_detail = ""
+        resp = None
+        for attempt in range(max_retries):
             try:
-                error_detail = resp.text[:500]
-            except Exception as e:
-                logger.debug(f"[AgnesImage] Failed to read error response: {e}")
-            logger.error(f"[AgnesImage] HTTP {resp.status_code}: {error_detail}")
-            raise
+                # 全局限速：在发起 HTTP 请求前获取令牌
+                await asyncio.to_thread(get_rate_limiter().acquire)
+                resp = await asyncio.to_thread(
+                    requests.post,
+                    f"{BASE_URL}/images/generations",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=(30, 120),
+                )
+
+                # 429 限流：退避重试
+                if resp.status_code == 429 and attempt < max_retries - 1:
+                    delay = retry_base_delay * (attempt + 1)
+                    logger.warning(
+                        f"[AgnesImage] 429 rate limit, "
+                        f"retry {attempt + 1}/{max_retries} in {delay:.0f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # 5xx 服务端错误：退避重试
+                if resp.status_code >= 500 and attempt < max_retries - 1:
+                    delay = retry_base_delay * (attempt + 1)
+                    logger.warning(
+                        f"[AgnesImage] {resp.status_code} server error, "
+                        f"retry {attempt + 1}/{max_retries} in {delay:.0f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                resp.raise_for_status()
+                break
+
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if attempt < max_retries - 1:
+                    delay = retry_base_delay * (attempt + 1)
+                    logger.warning(
+                        f"[AgnesImage] {type(e).__name__}, "
+                        f"retry {attempt + 1}/{max_retries} in {delay:.0f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+        else:
+            # 重试耗尽
+            if resp is not None:
+                resp.raise_for_status()
+            raise RuntimeError(
+                f"[AgnesImage] max retries ({max_retries}) exceeded"
+            )
 
         result = resp.json()
 

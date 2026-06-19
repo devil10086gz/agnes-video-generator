@@ -8,6 +8,7 @@ D6：load() 自动将无 task_type 字段的旧数据识别为 CreativeVideoTask
 import json
 import logging
 import os
+import tempfile
 from typing import Optional
 
 from core.config import get_working_dir
@@ -56,8 +57,8 @@ class TaskManager:
 
         v2.0：使用 parse_task_state() 根据 task_type 字段反序列化为正确的子类。
         向后兼容：旧数据无 task_type → 自动视为 CreativeVideoTask（D6）。
+        注意：load 是读操作，不调用 _ensure_dir()，避免为不存在的任务创建空目录。
         """
-        self._ensure_dir()
         if not os.path.exists(self._task_file):
             return None
 
@@ -91,16 +92,24 @@ class TaskManager:
     def _save(self):
         """持久化当前状态到 JSON 文件。
 
-        使用原子写（临时文件 + os.replace），避免写入中途进程被杀
+        使用原子写（唯一临时文件 + os.replace），避免写入中途进程被杀
         （如用户二次 Ctrl+C 触发的 os._exit、OOM、信号）留下截断的损坏 JSON
         导致任务无法断点续传。
+
+        P13: 使用 tempfile.mkstemp 生成唯一临时文件名，避免多写者竞争。
         """
         self._ensure_dir()
         if self._state:
-            tmp_path = self._task_file + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._state.model_dump(), f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self._task_file)
+            task_dir = os.path.dirname(self._task_file)
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=task_dir, suffix=".tmp")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(self._state.model_dump(), f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self._task_file)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
 
     def update_step(self, step_name: str, status: StepStatus):
         """更新某个步骤的状态并持久化。"""
@@ -166,5 +175,5 @@ class TaskManager:
                     })
                 except Exception as e:
                     logger.debug(f"[TaskManager] Failed to load task listing for {name}: {e}")
-        tasks.sort(key=lambda t: t.get("task_id", ""), reverse=True)
+        tasks.sort(key=lambda t: t.get("dir_name", ""), reverse=True)
         return tasks

@@ -18,10 +18,11 @@ import os
 import re
 import shutil
 import signal
+import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -84,8 +85,26 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 
 active_connections: Dict[str, WebSocket] = {}
 active_pipelines: Dict[str, BasePipeline] = {}
+# task_id -> asyncio.Lock, 串行化 create/resume/stop，避免并发操作同一任务导致
+# 旧 pipeline 的 finally 误删新 pipeline、或同任务双重运行。
+_pipeline_locks: Dict[str, asyncio.Lock] = {}
 background_tasks: set = set()
 shutdown_event = asyncio.Event()
+
+
+def _get_pipeline_lock(task_id: str) -> asyncio.Lock:
+    """获取（必要时创建）task_id 级别的并发锁。
+
+    create/resume/stop 端点对 ``active_pipelines`` 的检查与插入之间存在
+    ``await`` 让出点，快速重复操作（如 resume→stop）会让旧 pipeline 的
+    ``finally`` 误删新 pipeline，甚至产生同任务双重运行。用 per-task 锁将
+    这三类操作的「检查+插入/删除」关键段串行化。
+    """
+    lock = _pipeline_locks.get(task_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _pipeline_locks[task_id] = lock
+    return lock
 
 
 def _find_dir_name(task_id: str) -> str:
@@ -118,8 +137,18 @@ async def lifespan(app: FastAPI):
                         data = json.load(f)
                     if data.get("status") == "running":
                         data["status"] = "pending"
-                        with open(task_file, "w") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        # H5: 原子写（临时文件 + os.replace），避免写入中途崩溃损坏 JSON
+                        tmp_fd, tmp_path = tempfile.mkstemp(
+                            dir=os.path.join(working_dir, name), suffix=".tmp"
+                        )
+                        try:
+                            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                                json.dump(data, f, ensure_ascii=False, indent=2)
+                            os.replace(tmp_path, task_file)
+                        except Exception:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                            raise
                         logger.info(f"[Startup] Reset stale running task {name} -> pending")
                 except Exception as e:
                     logger.debug(f"[Startup] Failed to reset stale task {name}: {e}")
@@ -389,7 +418,9 @@ async def _run_pipeline(pipeline: BasePipeline, state: BaseTaskState):
     except Exception as e:
         logger.error(f"[Pipeline] Task {pipeline.task_id} failed: {e}", exc_info=True)
     finally:
-        if pipeline.task_id in active_pipelines:
+        # 身份比对：仅当字典里仍是当前 pipeline 时才删除。
+        # 否则快速 resume→stop 会让旧 pipeline 的 finally 误删新 pipeline。
+        if active_pipelines.get(pipeline.task_id) is pipeline:
             del active_pipelines[pipeline.task_id]
 
 
@@ -422,6 +453,21 @@ async def create_simple_task(
     api_key = get_api_key()
     if not api_key:
         raise HTTPException(status_code=400, detail="请先配置 API Key")
+
+    # P7: 参数校验
+    _VALID_MODES = {"t2v", "i2v", "ti2vid", "keyframes"}
+    if mode not in _VALID_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode 必须为 {_VALID_MODES} 之一，当前: {mode}",
+        )
+    if duration not in DURATION_FRAME_MAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"duration 必须为 {sorted(DURATION_FRAME_MAP.keys())} 之一，当前: {duration}",
+        )
+    if len(prompt) > 5000:
+        raise HTTPException(status_code=422, detail="prompt 最多 5000 字符")
 
     task_id = uuid.uuid4().hex[:12]
     dir_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_id}"
@@ -483,7 +529,7 @@ async def create_creative_task(
     video_height: int = Form(1152),
     video_duration: int = Form(5),
     reference_image: UploadFile = File(None),
-    end_frame_images: list = None,
+    end_frame_images: List[UploadFile] = File(None),
     use_custom_end_frames: bool = Form(False),
     generate_end_frames_from_ref: bool = Form(True),
     # v2.0 音频配置
@@ -502,6 +548,12 @@ async def create_creative_task(
     api_key = get_api_key()
     if not api_key:
         raise HTTPException(status_code=400, detail="请先配置 API Key")
+
+    # P7: 参数校验
+    if len(idea) > 10000:
+        raise HTTPException(status_code=422, detail="idea 最多 10000 字符")
+    if video_duration < 1 or video_duration > 30:
+        raise HTTPException(status_code=422, detail="video_duration 范围 1-30 秒")
 
     task_id = uuid.uuid4().hex[:12]
     name = creative_name.strip() if creative_name else f"video_{task_id}"
@@ -555,6 +607,20 @@ async def create_creative_task(
             f.write(await reference_image.read())
         state.reference_image = upload_path
 
+    # P3: 处理自定义尾帧图片上传
+    if use_custom_end_frames and end_frame_images:
+        saved_paths = []
+        for idx, ef_file in enumerate(end_frame_images):
+            if ef_file and ef_file.filename:
+                ext = os.path.splitext(ef_file.filename)[1] or ".png"
+                upload_path = os.path.join(UPLOAD_DIR, f"{task_id}_end_{idx}{ext}")
+                with open(upload_path, "wb") as f:
+                    f.write(await ef_file.read())
+                saved_paths.append(upload_path)
+        if saved_paths:
+            state.end_frame_images = saved_paths
+            logger.info(f"[Pipeline] Saved {len(saved_paths)} custom end frame images for task {task_id}")
+
     pipeline = _create_pipeline_for_type(TaskType.CREATIVE, api_key, task_id, dir_name)
     active_pipelines[task_id] = pipeline
 
@@ -591,6 +657,9 @@ async def create_manuscript_task(
 
     if not manuscript_text.strip():
         raise HTTPException(status_code=400, detail="稿件内容不能为空")
+    # P7: 文本长度上限
+    if len(manuscript_text) > 50000:
+        raise HTTPException(status_code=422, detail="稿件文本最多 50000 字符")
 
     task_id = uuid.uuid4().hex[:12]
     name = creative_name.strip() if creative_name else f"manuscript_{task_id}"
@@ -649,7 +718,7 @@ async def create_task_legacy(
     video_width: int = Form(768),
     video_height: int = Form(1152),
     reference_image: UploadFile = File(None),
-    end_frame_images: list = None,
+    end_frame_images: List[UploadFile] = File(None),
     use_custom_end_frames: bool = Form(False),
     generate_end_frames_from_ref: bool = Form(True),
 ):
@@ -691,34 +760,38 @@ async def resume_task(task_id: str):
     if not api_key:
         raise HTTPException(status_code=400, detail="请先配置 API Key")
 
-    if task_id in active_pipelines:
-        existing = active_pipelines[task_id]
-        if existing._stop_event.is_set():
-            logger.info(f"[Resume] Replacing stopped pipeline for task {task_id}")
-            del active_pipelines[task_id]
-        else:
-            raise HTTPException(status_code=400, detail="Task is already running")
+    # 关键段串行化：check 与 insert 之间存在多个 await 让出点，快速重复 resume
+    # 会让两次请求都通过 "task not in active_pipelines" 检查并各自启动 pipeline，
+    # 导致同任务双重运行、状态文件交叉写入。
+    async with _get_pipeline_lock(task_id):
+        if task_id in active_pipelines:
+            existing = active_pipelines[task_id]
+            if existing._stop_event.is_set():
+                logger.info(f"[Resume] Replacing stopped pipeline for task {task_id}")
+                del active_pipelines[task_id]
+            else:
+                raise HTTPException(status_code=400, detail="Task is already running")
 
-    dir_name = _find_dir_name(task_id)
-    tm = TaskManager(task_id, dir_name=dir_name)
-    state = tm.load()
-    if not state:
-        raise HTTPException(status_code=404, detail="Task not found")
+        dir_name = _find_dir_name(task_id)
+        tm = TaskManager(task_id, dir_name=dir_name)
+        state = tm.load()
+        if not state:
+            raise HTTPException(status_code=404, detail="Task not found")
 
-    if state.status == StepStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="Task is already completed")
+        if state.status == StepStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Task is already completed")
 
-    logger.info(f"[Resume] Starting resume for task {task_id}, type={state.task_type}, status={state.status}")
+        logger.info(f"[Resume] Starting resume for task {task_id}, type={state.task_type}, status={state.status}")
 
-    # v2.0：根据 task_type 选择对应的 Pipeline
-    pipeline = _create_pipeline_for_type(state.task_type, api_key, task_id, dir_name)
-    active_pipelines[task_id] = pipeline
+        # v2.0：根据 task_type 选择对应的 Pipeline
+        pipeline = _create_pipeline_for_type(state.task_type, api_key, task_id, dir_name)
+        active_pipelines[task_id] = pipeline
 
-    if task_id in active_connections:
-        logger.info(f"[Resume] Binding existing WebSocket for task {task_id}")
-        pipeline.progress_callback = _make_progress_callback(task_id)
+        if task_id in active_connections:
+            logger.info(f"[Resume] Binding existing WebSocket for task {task_id}")
+            pipeline.progress_callback = _make_progress_callback(task_id)
 
-    _launch_background_task(_run_pipeline(pipeline, state))
+        _launch_background_task(_run_pipeline(pipeline, state))
     return {"ok": True, "task_id": task_id, "dir_name": dir_name}
 
 
