@@ -69,87 +69,128 @@ i18n 新增 key：`subtitleEnabled` / `audioEnabled` 等。
 
 ---
 
-### 二、字幕随机位置模式
+### 二、字幕 LLM 智能样式模式
 
-**现状问题：** 当前所有字幕共用一个全局位置（`"bottom"` 或 `"top"`），无法为每条字幕单独指定位置。
+**现状问题：** 当前所有字幕共用一个全局样式（位置、颜色、字号均固定），无法为每条字幕单独定制外观。
 
-**方案概述：** 新增 `position_mode` 字段支持 `"fixed"`（默认）和 `"random"` 两种模式。`"random"` 模式下，由 LLM 为每条字幕决定屏幕位置，SRT 文件扩展携带位置信息，拼接时逐条定位。
+**方案概述：** 新增 `style_mode` 字段支持 `"fixed"`（默认）和 `"llm"` 两种模式。`"llm"` 模式下，由 LLM 为每条字幕单独决定 **位置、颜色、字号**，SRT 文件扩展携带样式信息，拼接时逐条渲染。用户可通过自然语言提示（`style_hints`）描述期望的风格，如"强调词用红色大字号，摘要用黄色，其余用白色小字放在底部"。
 
 #### 2.1 数据模型变更（models/task.py）
 
 ```python
 class SubtitleStyle(BaseModel):
-    # ... 现有字段 ...
-    position_mode: str = "fixed"  # "fixed" | "llm"
-    position_hints: str = ""      # 用户给 LLM 的位置偏好描述（如"字幕不要遮挡画面中央人物"）
+    # === 固定模式下使用的全局默认值 ===
+    font: str = "STHeitiMedium.ttc"
+    color: str = "white"
+    position: tuple = ("center", "bottom-80")
+    fontsize: int = 48
+    stroke_color: str = "black"
+    stroke_width: int = 2
+    bg_color: tuple = (0, 0, 0, 128)
+
+    # === LLM 模式控制 ===
+    style_mode: str = "fixed"      # "fixed" | "llm"
+    style_hints: str = ""           # 用户对 LLM 的样式偏好描述
 ```
 
-#### 2.2 SRT 位置扩展
+#### 2.2 SRT 侧车 JSON 格式扩展
 
-标准 SRT 格式不支持位置信息。方案采用 **SRT + 侧车 JSON** 双文件方案：
-
-- `subtitle.srt`：标准 SRT，保持兼容
-- `subtitle_positions.json`：与 SRT 条目一一对应的位置数组
+采用 **SRT + 侧车 JSON** 双文件方案，JSON 文件名改为 `subtitle_styles.json`（原 `subtitle_positions.json`）：
 
 ```json
 [
-  {"index": 1, "position": ["center", "top+100"]},
-  {"index": 2, "position": ["left+40", "bottom-120"]},
-  {"index": 3, "position": ["center", "center"]}
+  {
+    "index": 1,
+    "position": ["center", "top+100"],
+    "color": "#FF4444",
+    "fontsize": 56
+  },
+  {
+    "index": 2,
+    "position": ["center", "bottom-120"],
+    "color": "white",
+    "fontsize": 42
+  },
+  {
+    "index": 3,
+    "position": ["left+40", "bottom-200"],
+    "color": "#FFD700",
+    "fontsize": 48
+  }
 ]
 ```
 
-#### 2.3 LLM 位置决策（core/screenwriter.py）
+字段说明：
 
-新增方法 `generate_subtitle_positions`：
+- `position`：必填。格式同现有 `("horizontal", "vertical")`，支持 `"center"`, `"left+N"`, `"right+N"`, `"top+N"`, `"bottom-N"`
+- `color`：可选。未指定时回退到 `SubtitleStyle.color` 全局值。支持颜色名和 hex
+- `fontsize`：可选。未指定时回退到 `SubtitleStyle.fontsize` 全局值。范围 18-80
+
+后续可扩展 `stroke_color`、`bg_color` 等字段，当前聚焦核心三要素。
+
+#### 2.3 LLM 样式决策（core/screenwriter.py）
+
+新增方法 `generate_subtitle_styles`（替代原 `generate_subtitle_positions`）：
 
 ```python
-async def generate_subtitle_positions(
+async def generate_subtitle_styles(
     srt_path: str,
     video_width: int,
     video_height: int,
-    position_hints: str = "",
+    style_hints: str = "",
 ) -> list[dict]
 ```
 
-输入：SRT 文件中的每条字幕文本 + 时间码 + 视频尺寸 + 用户位置偏好。
+输入：SRT 文件中的每条字幕文本 + 时间码 + 视频尺寸 + 用户样式偏好。
 
 LLM Prompt 设计要点：
 
 - 提供视频尺寸和可用区域（四边各留 40px 安全边距）
-- 列出所有字幕条目（序号、文本、时间范围）
-- 要求 LLM 为每条字幕选择位置，输出 JSON 数组
-- 位置格式统一为 `(horizontal, vertical)`，支持 `"center"`, `"left+N"`, `"right+N"`, `"top+N"`, `"bottom-N"`
-- 规则：相邻时间段的字幕位置应有所变化以避免视觉单调；含义相关的连续字幕可保持同位置
+- 列出所有字幕条目（序号、起止时间、文本内容）
+- 要求 LLM 为每条字幕决定：位置、颜色（colorname 或 #RRGGBB）、字号（像素）
+- 位置格式：`["horizontal", "vertical"]`，支持 `"center"`, `"left+N"`, `"right+N"`, `"top+N"`, `"bottom-N"`
+- 设计规则（写入 prompt 约束）：
+  - 相邻时间段的字幕位置应有所变化，避免视觉单调
+  - 语义转折或新话题的字幕可换位置、换色
+  - 强调性/结论性内容用较大字号和醒目色（如红、金）
+  - 颜色与视频背景保持足够对比度，确保可读性
+  - 用户 `style_hints` 中的偏好作为最强约束
 - JSON mode 输出，确保可解析
 
-限速：此方法调用 Chat API，共享全局 rate_limiter。
+限速：此方法调用 Chat API，共享全局 rate_limiter。单次调用覆盖所有字幕条目。
 
 #### 2.4 拼接层变更（core/compositor/concatenator.py）
 
 `concat_videos_with_audio_overlay` 新增可选参数：
 
 ```python
-subtitle_positions: Optional[str] = None  # positions JSON 路径
+subtitle_styles: Optional[str] = None  # styles JSON 路径（取代原 subtitle_positions）
 ```
 
-`_parse_srt_to_clips` 修改：当 `subtitle_positions` 存在时，逐条读取位置信息，覆盖 `SubtitleStyle.position` 的全局值。每条字幕独立调用 `_resolve_subtitle_position`。
+`_parse_srt_to_clips` 修改：当 `subtitle_styles` 存在时，逐条读取 JSON，以全局 `SubtitleStyle` 为底，用 JSON 中的字段覆盖 `position`、`color`、`fontsize`，每条字幕独立创建 TextClip。未在 JSON 中出现的字段沿用全局值。
 
 #### 2.5 Pipeline 变更
 
-在 `_step_subtitle` 步骤中，当 `position_mode == "llm"` 时：
+在 `_step_subtitle` 步骤中，当 `style_mode == "llm"` 时：
 
 1. 先生成标准 SRT（现有逻辑）
-2. 调用 `screenwriter.generate_subtitle_positions(srt_path, width, height, hints)` 生成位置 JSON
-3. 将位置 JSON 路径存入 task state
+2. 调用 `screenwriter.generate_subtitle_styles(srt_path, width, height, hints)` 生成样式 JSON
+3. 将样式 JSON 路径存入 task state
 
-在 `_step_concatenate` 中传递 `subtitle_positions` 参数。
+在 `_step_concatenate` 中传递 `subtitle_styles` 参数。
 
 #### 2.6 前端变更
 
-字幕位置下拉框新增一个选项 `"llm"`（显示为 "AI 智能定位"）。选中后显示一个文本框（`position_hints`），用户可输入位置偏好描述。
+字幕位置上方的控件改为样式模式选择：
 
-i18n 新增 key：`subPositionLLM` / `subPositionHints` / `subPositionHintsPlaceholder`。
+```
+样式模式: [固定样式 ▼]  /  [AI 智能样式 ▼]
+```
+
+- 选固定样式时：下方显示原有的位置下拉、颜色、字号等全局控件
+- 选 AI 智能样式时：这些控件隐藏（或灰化作为默认值参考），改为显示一个 `style_hints` 多行文本框，placeholder 示例："强调词用红色大号字，普通叙述白色小字放底部。字幕避免遮挡画面中央。变化位置不要太频繁。"
+
+i18n 新增 key：`subStyleMode`, `subStyleFixed`, `subStyleLLM`, `subStyleHints`, `subStyleHintsPlaceholder`。
 
 ---
 
@@ -189,7 +230,7 @@ class AnchorVideoTask(BaseTaskState):
     anchor_clip_path: str = ""       # 本地路径（约 5 秒）
     audio_path: str = ""
     srt_path: str = ""
-    positions_path: str = ""         # LLM 生成的字幕位置
+    styles_path: str = ""            # LLM 生成的字幕样式（位置+颜色+字号）
     final_video_path: str = ""
 ```
 
@@ -248,7 +289,7 @@ DEFAULT_ANCHOR_CONFIG = {
 
 - 从 SubMaker cues 生成 SRT（复用 `SubtitleGenerator.cues_to_srt`）
 - 用户在 `subtitle_position_hints` 中描述字幕位置要求（如"字幕放在主播下方，不遮挡人脸"）
-- LLM 调用 `screenwriter.generate_subtitle_positions`，Prompt 特殊设计：
+- LLM 调用 `screenwriter.generate_subtitle_styles`（复用功能二的 LLM 样式决策），Prompt 特殊设计：
   - 告知 LLM 这是数字人口播场景，画面主体是主播形象
   - 提供主播图片的大致构图描述（半身照/全身照等，可从 anchor_prompt 推断）
   - 用户的位置偏好作为约束
@@ -264,7 +305,7 @@ def composite_anchor_video(
     clip_path: str,            # 5 秒主播动态视频
     audio_path: str,           # TTS 读稿音频
     srt_path: Optional[str],   # 字幕 SRT
-    subtitle_positions: Optional[str],  # LLM 位置 JSON
+    subtitle_styles: Optional[str],   # LLM 样式 JSON（位置+颜色+字号）
     output_path: str,
     audio_duration: float,     # 音频总时长
     subtitle_style: Optional[SubtitleStyle] = None,
@@ -278,7 +319,7 @@ def composite_anchor_video(
 3. 构建 `[clip_path] * n` 传入 `VideoConcatenator.concat_videos()` 拼接为足够长的循环视频
 4. 裁剪循环视频至 `audio_duration + 1.0` 秒（留 1 秒 padding）
 5. 叠加 TTS 音频（音量 2.5x 放大，与其他任务类型一致）
-6. 若有字幕，解析 SRT + positions JSON，逐条叠加 TextClip
+6. 若有字幕，解析 SRT + styles JSON，逐条叠加 TextClip（复用功能二的逐条样式渲染逻辑）
 7. 输出最终视频
 
 循环拼接的接缝处理：由于 i2v 生成的主播视频动作幅度小（微表情、呼吸），首尾帧差异不大，直接拼接视觉上可接受。若需更平滑，可用 ffmpeg 的 `xfade` 滤镜做 0.3 秒交叉淡入淡出过渡。
@@ -438,18 +479,18 @@ Phase 1 是基础设施，Phase 2 和 Phase 3 都依赖它。Phase 2 和 Phase 3
 | 1.2 | Pipeline 步骤拆分：`_step_audio` + `_step_subtitle` 替代 `_step_audio_subtitle`；独立 `enabled` 逻辑；无旁白有字幕时从纯文本生成 SRT | `core/pipelines/creative_video.py`, `core/pipelines/manuscript_video.py`, `core/audio/subtitle.py` | 场景矩阵验证：(1) 旁白+字幕均开启 (2) 仅旁白 (3) 仅字幕 (4) 均关闭；每种场景 curl 创建任务，检查输出文件 | ✅ |
 | 1.3 | 拼接层条件调整：`_step_concatenate` 判断逻辑从 `audio_config.enabled` 改为 `audio_config.enabled or subtitle_config.enabled` | `core/compositor/concatenator.py` | 1.2 的四种场景任务均能正常生成最终视频，无异常日志 | ✅ |
 | 1.4 | API 端点 + 前端：`server.py` 新增 `subtitle_enabled` 参数；前端 UI 拆分字幕/旁白为独立控制区 | `server.py`, `static/index.html` | curl 校验端点参数接收正确；浏览器操作：分别勾选/取消字幕和旁白开关，确认提交参数正确 | ✅ |
-| 1.5 | Phase 1 集成验证：端到端回归，确保现有功能无退化 | 全部 | 按 AGENTS.md 0.4 部署验证清单执行；创建创意视频 + 稿件视频各 4 种组合场景，确认产物完整 | ⬜ |
+| 1.5 | Phase 1 集成验证：端到端回归，确保现有功能无退化 | 全部 | 按 AGENTS.md 0.4 部署验证清单执行；创建创意视频 + 稿件视频各 4 种组合场景，确认产物完整 | ✅ |
 
-#### Phase 2：字幕随机位置模式
+#### Phase 2：字幕 LLM 智能样式
 
 | 批次 | 内容 | 涉及文件 | 验证方式 | 状态 |
 |------|------|---------|---------|------|
-| 2.1 | `SubtitleStyle` 新增 `position_mode` + `position_hints`；SRT 侧车 JSON 格式定义 | `models/task.py` | 语法检查 + 导入验证；构造带 `position_mode="llm"` 的 `SubtitleStyle` 实例，序列化/反序列化正确 | ⬜ |
-| 2.2 | LLM 位置决策：`screenwriter.generate_subtitle_positions()` 方法，输入 SRT + 视频尺寸 + 用户偏好，输出位置 JSON | `core/screenwriter.py` | 单元测试：准备一段 SRT 样例，调用 `generate_subtitle_positions`，验证返回 JSON 格式正确、条目数与 SRT 一致、位置值在合法范围内 | ⬜ |
-| 2.3 | 拼接层逐条位置：`_parse_srt_to_clips` 读取位置 JSON，每条字幕独立定位 | `core/compositor/concatenator.py` | 准备固定 SRT + 位置 JSON 对，调用 `concat_videos_with_audio_overlay`，输出视频中每条字幕位置与 JSON 对应 | ⬜ |
-| 2.4 | Pipeline 集成：在 `_step_subtitle` 中当 `position_mode == "llm"` 时调用 LLM 生成位置 | `core/pipelines/creative_video.py`, `core/pipelines/manuscript_video.py` | 创建带 `position_mode="llm"` 的创意视频任务，确认生成了 `subtitle_positions.json`，且最终视频中字幕位置不固定 | ⬜ |
-| 2.5 | 前端：字幕位置下拉新增"AI 智能定位"选项，选中后显示 `position_hints` 文本框 | `static/index.html` | 浏览器操作：选中 AI 智能定位 → 文本框出现 → 输入偏好 → 提交任务，确认后端收到 `position_mode=llm` | ⬜ |
-| 2.6 | Phase 2 集成验证：LLM 位置 + 固定位置两种模式端到端对比 | 全部 | 创建两组创意视频任务（fixed vs llm），对比产物差异；确认 LLM 模式不引入崩溃或错误 | ⬜ |
+| 2.1 | `SubtitleStyle` 新增 `style_mode` + `style_hints`；SRT 侧车 JSON 格式扩展为 position + color + fontsize | `models/task.py` | 构造 `style_mode="llm"` 的 `SubtitleStyle`，序列化/反序列化往返正确；手写一份 `subtitle_styles.json`，验证各字段解析正确 | ⬜ |
+| 2.2 | LLM 样式决策：`screenwriter.generate_subtitle_styles()` 方法，输入 SRT + 视频尺寸 + 用户偏好，输出含 position/color/fontsize 的 JSON 数组 | `core/screenwriter.py` | 单元测试：准备一段 10 条字幕的 SRT 样例，调用 `generate_subtitle_styles`，验证 JSON 格式正确、条目数一致、position 合法、color 可解析、fontsize 在 18-80 范围 | ⬜ |
+| 2.3 | 拼接层逐条样式：`_parse_srt_to_clips` 读取 `subtitle_styles.json`，逐条覆盖 position/color/fontsize，每条字幕独立创建 TextClip | `core/compositor/concatenator.py` | 准备固定 SRT + 手写 styles JSON，调用 `concat_videos_with_audio_overlay`，输出视频中每条字幕的位置、颜色、大小与 JSON 设定一致 | ⬜ |
+| 2.4 | Pipeline 集成：在 `_step_subtitle` 中当 `style_mode == "llm"` 时调用 LLM 生成样式 JSON | `core/pipelines/creative_video.py`, `core/pipelines/manuscript_video.py` | 创建带 `style_mode="llm"` 的创意视频任务，确认生成了 `subtitle_styles.json`，最终视频字幕外观多样化 | ⬜ |
+| 2.5 | 前端：样式模式下拉（固定/AI 智能），选 AI 智能时显示 `style_hints` 文本框，隐藏全局位置/颜色/字号控件 | `static/index.html` | 浏览器操作：切换两种模式 → 控件显隐正确 → 提交任务，确认后端收到 `style_mode=llm` 和 `style_hints` | ⬜ |
+| 2.6 | Phase 2 集成验证：固定样式 vs LLM 样式两种模式端到端对比 | 全部 | 创建两组创意视频任务（fixed vs llm），对比产物差异；确认 LLM 模式不引入崩溃，字幕按预期呈现多样化 | ⬜ |
 
 #### Phase 3：数字人口播
 
@@ -477,4 +518,4 @@ Phase 1 是基础设施，Phase 2 和 Phase 3 都依赖它。Phase 2 和 Phase 3
 |------|------|------|
 | 2026-06-19 | — | 方案制定完成，文档建立 |
 | 2026-06-19 | 1.1-1.4 | Phase 1 代码变更全部实现（数据模型 + Pipeline 拆步 + 拼接层 + API/前端），文档进度更新为 ✅ |
-| 2026-06-19 | 1.5 | Phase 1 集成验证 ⬜ 待执行 |
+| 2026-06-19 | 1.5 | Phase 1 集成验证 ✅ 完成 — 4 种字幕/旁白组合创意视频全部生成成功，产物完整 |
