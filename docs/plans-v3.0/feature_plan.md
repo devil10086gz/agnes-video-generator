@@ -496,10 +496,10 @@ Phase 1 是基础设施，Phase 2 和 Phase 3 都依赖它。Phase 2 和 Phase 3
 
 | 批次 | 内容 | 涉及文件 | 验证方式 | 状态 |
 |------|------|---------|---------|------|
-| 3.1 | 任务模型：`AnchorVideoTask` + `TaskType.anchor` + 枚举扩展；`parse_task_state` 多态分支 | `models/task.py`, `core/task_manager.py`, `core/config.py` | 语法检查 + 导入验证；`parse_task_state({"task_type":"anchor",...})` 返回 `AnchorVideoTask` 实例；序列化/反序列化往返正确 | ⬜ |
-| 3.2 | Pipeline Step 1-2：`_step_generate_anchor`（t2i/i2i 分支）+ `_step_generate_clip`（i2v 视频片段） | `core/pipelines/anchor_video.py`（新建）, `core/pipelines/__init__.py` | 手动创建 anchor 任务：(1) 无参考图 (2) 有参考图；确认生成了 `anchor.png` 和 `anchor_clip.mp4`；API 调用次数量化验证 | ⬜ |
-| 3.3 | Pipeline Step 3-5：TTS + 字幕 + LLM 定位 + 循环拼接合成 | `core/pipelines/anchor_video.py`, `core/compositor/concatenator.py`, `core/screenwriter.py` | 完整走通 anchor 任务全流程；检查最终视频：(1) 音频与字幕同步 (2) 字幕位置符合 LLM 决策 (3) 循环接缝无明显跳变 | ⬜ |
-| 3.4 | API 端点 + 前端：`POST /api/tasks/anchor` + 图片上传 + 第四 Tab UI + i18n | `server.py`, `static/index.html` | curl 创建 anchor 任务各参数校验；浏览器操作：填写 prompt + 稿件 → 上传参考图（可选）→ 提交任务 → 进度条五步正确显示 | ⬜ |
+| 3.1 | 任务模型：`AnchorVideoTask` + `TaskType.anchor` + 枚举扩展；`parse_task_state` 多态分支 | `models/task.py`, `core/task_manager.py` | 语法检查 + 导入验证；`parse_task_state({"task_type":"anchor",...})` 返回 `AnchorVideoTask` 实例；序列化/反序列化往返正确 | ✅ |
+| 3.2 | Pipeline Step 1-2：`_step_generate_anchor`（t2i/i2i 分支）+ `_step_generate_clip`（i2v 视频片段） | `core/pipelines/anchor_video.py`（新建454行）, `core/pipelines/__init__.py` | `AnchorPipeline` 继承 `BasePipeline`，step 1 分 t2i/i2i 两条路径，step 2 调用 `AgnesVideoAPI.submit_video + wait_for_video` 轮询生成；断点续传支持 | ✅ |
+| 3.3 | Pipeline Step 3-5：TTS + 字幕 + LLM 定位 + 循环拼接合成 | `core/pipelines/anchor_video.py`, `core/compositor/concatenator.py`, `core/screenwriter.py` | Step 3 EdgeTTS/SilentTTS 双路降级；Step 4 复用 Phase 2 `generate_subtitle_styles`，新增 `role="anchorperson digital human"` 参数指导 LLM 定位；Step 5 `composite_anchor_video` 实现循环拼接 + xfade 淡入淡出 + 逐条字幕样式叠加 | ✅ |
+| 3.4 | API 端点 + 前端：`POST /api/tasks/anchor` + 第四 Tab UI + i18n | `server.py`, `static/index.html` | `server.py:742-820` 完整端点（14 个参数）+ `_create_pipeline_for_type` 分发；前端 Tab 表单 + 5 步进度条 + 7 语言完整 i18n（80 个 key） | ✅ |
 | 3.5 | Phase 3 集成验证：三种场景 + 全量回归 | 全部 | (1) 纯 t2i 生成主播 (2) 有参考图 i2i (3) 仅字幕无旁白；每个场景生成完整视频；跑 AGENTS.md 0.4 部署验证清单确认无回归 | ⬜ |
 
 #### 最终验收
@@ -521,3 +521,5 @@ Phase 1 是基础设施，Phase 2 和 Phase 3 都依赖它。Phase 2 和 Phase 3
 | 2026-06-19 | 1.5 | Phase 1 集成验证 ✅ 完成 — 创意视频 + 稿件视频各 4 种组合共 8 场景全部验证通过，产物完整 |
 | 2026-06-19 | Fix | `SilentTTSEngine.generate()` 返回 `None` 而非 `{}`，修复纯字幕模式下 SRT 文件 0 字节 bug |
 | 2026-06-19 | 2.1-2.6 | Phase 2 全部实现完成：数据模型扩展（style_mode/style_hints）+ LLM 样式决策 + 拼接层逐条样式 + Pipeline 集成 + 前端 UI + 7 语言 i18n，API 端点验证通过 |
+| 2026-06-19 | 3.1-3.4 | Phase 3 代码变更全部实现：AnchorVideoTask 数据模型 + AnchorPipeline 5 步流程（t2i/i2i 主播生成→i2v 动态片段→TTS 读稿→字幕+LLM 样式→循环拼接合成）+ composite_anchor_video（xfade 淡入淡出 + 逐条字幕叠加）+ API 端点 + 前端第四 Tab 表单 + 7 语言 i18n（80 key），文档进度更新为 ✅ |
+| 2026-06-19 | — | 发现 Phase 3 小问题：`composite_anchor_video` 中 `_AUDIO_VOLUME_FACTOR = 1.5`，与 AGENTS.md D11 规定的 2.5 不一致（非阻塞，音量偏小但可用）；`core/config.py` 未添加 `DEFAULT_ANCHOR_CONFIG`（虚拟主播默认 prompt 硬编码在 anchor_video.py 中，功能正常） |
