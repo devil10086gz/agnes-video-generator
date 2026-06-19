@@ -37,6 +37,7 @@ from core.pipelines import (
     CreativeVideoPipeline,
     ManuscriptVideoPipeline,
 )
+from core.api.agnes_image import AgnesImageAPI
 from core.task_manager import TaskManager
 from models.task import (
     AnchorVideoTask,
@@ -261,6 +262,67 @@ async def clear_config():
 async def get_voices():
     """返回可选 TTS 语音角色列表。"""
     return {"voices": AVAILABLE_VOICES}
+
+
+# ═══════════════════════════════════════════════════
+# 简单图片生成（非任务，直调接口返回）
+# ═══════════════════════════════════════════════════
+
+GENERATED_DIR = os.path.join(os.path.dirname(__file__), "static", "generated")
+
+
+@app.post("/api/image/generate")
+async def generate_image(
+    prompt: str = Form(...),
+    size: str = Form("1024x1024"),
+    negative_prompt: Optional[str] = Form(None),
+    reference_image: UploadFile = File(None),
+):
+    """简单图片生成：直调 Agnes Image API 并返回图片 URL。"""
+    api_key = get_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先配置 API Key")
+
+    if len(prompt) > 5000:
+        raise HTTPException(status_code=422, detail="prompt 最多 5000 字符")
+    if not prompt.strip():
+        raise HTTPException(status_code=422, detail="prompt 不能为空")
+
+    _VALID_SIZES = {"1024x1024", "768x1152", "1152x768", "768x1344", "1344x768", "1792x1024", "1024x1792"}
+    if size not in _VALID_SIZES:
+        raise HTTPException(status_code=422, detail=f"size 必须为 {_VALID_SIZES} 之一")
+
+    os.makedirs(GENERATED_DIR, exist_ok=True)
+    image_api = AgnesImageAPI(api_key=api_key)
+
+    ref_paths = []
+    if reference_image and reference_image.filename:
+        ext = os.path.splitext(reference_image.filename)[1] or ".png"
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        ref_path = os.path.join(UPLOAD_DIR, f"img_ref_{uuid.uuid4().hex[:8]}{ext}")
+        with open(ref_path, "wb") as f:
+            f.write(await reference_image.read())
+        ref_paths.append(ref_path)
+
+    try:
+        output = await image_api.generate_single_image(
+            prompt=prompt,
+            reference_image_paths=ref_paths,
+            size=size,
+            negative_prompt=negative_prompt,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    img_filename = f"{uuid.uuid4().hex[:12]}.png"
+    img_path = os.path.join(GENERATED_DIR, img_filename)
+    try:
+        output.save(img_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"图片保存失败: {e}")
+
+    logger.info(f"[Image] Generated: {img_filename}, prompt={prompt[:60]}...")
+    return {"ok": True, "url": f"/static/generated/{img_filename}"}
 
 
 # ═══════════════════════════════════════════════════
