@@ -165,7 +165,22 @@ class VideoConcatenator:
         # 根据视频宽度动态计算每行最大字符数（与 subtitle.py 一致）
         available_w = video_width - 40
 
+        # 位置冲突时的备选位置池（循环取用，确保重叠字幕不在同一位置）
+        _FALLBACK_POSITIONS = [
+            ("center", "top+80"),
+            ("center", "center"),
+            ("center", "bottom-100"),
+            ("left", "center"),
+            ("right", "center"),
+            ("left", "top+60"),
+            ("right", "bottom-120"),
+            ("center", "top+120"),
+            ("left", "bottom-80"),
+            ("right", "top+80"),
+        ]
+
         subs_clips = []
+        _clip_registry: list[tuple[float, float, tuple]] = []  # (start, end, position)
         with open(srt_path, "r", encoding="utf-8") as f:
             for sub in srt_lib.parse(f):
                 txt = sub.content
@@ -221,7 +236,31 @@ class VideoConcatenator:
                 # clamp vertical pixel: ~100px safe zone at bottom for 2-line text
                 if isinstance(v_part, (int, float)):
                     v_part = max(20, min(v_part, video_height - 100))
-                clip = clip.with_position((h_part, v_part))
+                pos_tuple = (h_part, v_part)
+
+                # ── 位置去重：与现有字幕时间重叠且位置相同 → 自动错开 ──
+                for es, ee, ep in _clip_registry:
+                    if start_s < ee and es < end_s and ep == pos_tuple:
+                        for alt_pos in _FALLBACK_POSITIONS:
+                            alt_resolved = VideoConcatenator._resolve_subtitle_position(
+                                alt_pos, video_height=video_height, video_width=video_width,
+                            )
+                            if isinstance(alt_resolved[0], (int, float)):
+                                max_x = video_width - available_w
+                                alt_resolved = (max(20, min(alt_resolved[0], max(20, max_x))), alt_resolved[1])
+                            if isinstance(alt_resolved[1], (int, float)):
+                                alt_resolved = (alt_resolved[0], max(20, min(alt_resolved[1], video_height - 100)))
+                            conflict = any(
+                                start_s < ee2 and es2 < end_s and alt_resolved == ep2
+                                for es2, ee2, ep2 in _clip_registry
+                            )
+                            if not conflict:
+                                pos_tuple = alt_resolved
+                                break
+                        break
+
+                clip = clip.with_position(pos_tuple)
+                _clip_registry.append((start_s, end_s, pos_tuple))
                 subs_clips.append(clip)
         return subs_clips
 

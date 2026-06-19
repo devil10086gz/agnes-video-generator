@@ -198,22 +198,25 @@ class SubtitleGenerator:
                 if multiplier > 1.0:
                     new_dur = (e_s - s_s) * multiplier
                     e_s = s_s + new_dur
-                    # 不超过下一个字幕的 start
+                    # 不超过下一个字幕的 end（容许突出字幕和后段重叠）
                     if gi + 1 < len(groups):
-                        e_s = min(e_s, groups[gi + 1][0] - 0.05)
+                        e_s = min(e_s, groups[gi + 1][1])
                     groups[gi] = (s_s, e_s, txt)
+
+        # ── 前后段重叠：每条字幕结束时间向后延伸 overlap_sec ──
+        _OVERLAP_SEC = 0.3
+        for gi in range(len(groups) - 1):
+            s_s, e_s, txt = groups[gi]
+            next_e = groups[gi + 1][1]
+            new_e = min(e_s + _OVERLAP_SEC, next_e)
+            if new_e > e_s:
+                groups[gi] = (s_s, new_e, txt)
 
         # 生成 SRT
         entries = []
         for idx, (s_s, e_s, txt) in enumerate(groups, 1):
-            # 确保每组至少 0.3 秒
             if e_s - s_s < 0.3:
                 e_s = s_s + 0.3
-            # 确保字幕之间不重叠（end 不超过下一个 start）
-            if idx < len(groups):
-                next_start = groups[idx][0]
-                if e_s > next_start:
-                    e_s = next_start - 0.05
 
             start_time = SubtitleGenerator.cue_to_srt_time(s_s)
             end_time = SubtitleGenerator.cue_to_srt_time(e_s)
@@ -252,6 +255,7 @@ class SubtitleGenerator:
         word_cues: object = None,
         max_chars_per_group: int = _MAX_SUB_CHARS,
         scene_start_times: Optional[List[float]] = None,
+        overlap_sec: float = 0.3,
     ) -> str:
         """为每个场景/段落生成细粒度 SRT，支持场景内再拆分为子段。
 
@@ -268,6 +272,7 @@ class SubtitleGenerator:
             max_chars_per_group: 每组最大字符数。
             scene_start_times: 每个场景在时间轴上的起始时间（秒）。
                 若未提供则按 scene_durations 累积计算。
+            overlap_sec: 前后段字幕重叠时长，同时展示多条降低音画不同步影响。
 
         Returns:
             SRT 格式字符串。
@@ -353,7 +358,8 @@ class SubtitleGenerator:
                 end_srt = SubtitleGenerator.cue_to_srt_time(seg_end)
                 entries.append(f"{global_idx}\n{start_srt} --> {end_srt}\n{seg}\n")
                 global_idx += 1
-                current_time = seg_end + 0.05  # 50ms 间隔
+                # 前后段重叠：下一段提前 overlap_sec 开始（至少不早于场景起点）
+                current_time = max(seg_end - overlap_sec, scene_start)
 
         return "\n".join(entries)
 
