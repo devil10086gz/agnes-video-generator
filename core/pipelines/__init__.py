@@ -144,6 +144,7 @@ class BasePipeline(ABC):
             r = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "csv=p=0", audio_path],
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=15,
             )
             return float(r.stdout.strip())

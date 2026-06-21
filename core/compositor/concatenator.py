@@ -271,6 +271,7 @@ class VideoConcatenator:
             r = subprocess.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                  "-of", "csv=p=0", path],
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=15,
             )
             return float(r.stdout.strip())
@@ -282,7 +283,10 @@ class VideoConcatenator:
         """执行 ffmpeg 命令，失败时抛 RuntimeError。"""
         logger.info(f"[Compositor] ffmpeg: {desc}")
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            r = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=600,
+            )
             if r.returncode != 0:
                 raise RuntimeError(
                     f"ffmpeg {desc} failed (code {r.returncode}): "
@@ -516,6 +520,7 @@ class VideoConcatenator:
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", clip_path],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=15,
         )
         clip_duration = float(probe.stdout.strip() or 5.0)
@@ -543,6 +548,7 @@ class VideoConcatenator:
                  "-c", "copy",
                  "-t", str(needed),
                  looped_path],
+                stdin=subprocess.DEVNULL,
                 check=True, capture_output=True, timeout=300,
             )
         except subprocess.CalledProcessError as e:
@@ -569,6 +575,7 @@ class VideoConcatenator:
                  "-preset", "fast",
                  "-t", str(needed),
                  looped_path],
+                stdin=subprocess.DEVNULL,
                 check=True, capture_output=True, timeout=300,
             )
 

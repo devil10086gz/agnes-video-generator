@@ -26,7 +26,7 @@ class VideoProcessor:
                     f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
             "-c:v", "libx264", "-preset", "fast",
             output_path,
-        ], capture_output=True, check=True, timeout=120)
+        ], stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=120)
 
         return output_path
 
@@ -44,7 +44,7 @@ class VideoProcessor:
             "-frames:v", "1",
             "-update", "1",
             output_path,
-        ], capture_output=True, check=True, timeout=30)
+        ], stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30)
 
         return output_path
 
@@ -62,7 +62,7 @@ class VideoProcessor:
             "-t", str(duration_sec),
             "-c:a", "libmp3lame", "-q:a", "4",
             output_path,
-        ], capture_output=True, check=True, timeout=30)
+        ], stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30)
 
         return output_path
 
@@ -94,7 +94,7 @@ class VideoProcessor:
                 "-c:v", "libx264", "-preset", "fast",
                 "-c:a", "aac",
                 output_path,
-            ], capture_output=True, check=True, timeout=120)
+            ], stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=120)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 logger.info(f"[Compositor] freeze via tpad succeeded: {output_path}")
                 return output_path
