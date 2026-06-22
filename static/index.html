@@ -152,7 +152,7 @@
     <!-- Task Type Tabs -->
     <div class="flex gap-2 mb-4">
       <button onclick="switchTaskType('simple')" id="ttype-simple" class="ttype-btn flex-1 px-4 py-3 rounded-xl text-sm font-medium tab-inactive transition text-center">
-        <span class="text-lg">🎬</span><br><span data-i18n="ttSimple">简单视频</span>
+        <span class="text-lg">🎬🖼️</span><br><span data-i18n="ttSimple">简易图像视频</span>
       </button>
       <button onclick="switchTaskType('creative')" id="ttype-creative" class="ttype-btn flex-1 px-4 py-3 rounded-xl text-sm font-medium tab-active transition text-center">
         <span class="text-lg">🎥</span><br><span data-i18n="ttCreative">创意长视频</span>
@@ -163,13 +163,21 @@
       <button onclick="switchTaskType('anchor')" id="ttype-anchor" class="ttype-btn flex-1 px-4 py-3 rounded-xl text-sm font-medium tab-inactive transition text-center">
         <span class="text-lg">🎙️</span><br><span data-i18n="ttAnchor">数字人口播</span>
       </button>
-      <button onclick="switchTaskType('image')" id="ttype-image" class="ttype-btn flex-1 px-4 py-3 rounded-xl text-sm font-medium tab-inactive transition text-center">
-        <span class="text-lg">🖼️</span><br><span data-i18n="ttImage">简单图片</span>
-      </button>
     </div>
 
-    <!-- ═══════ Tab 1: Simple Video ═══════ -->
+    <!-- ═══════ Tab 1: Simple Image & Video ═══════ -->
     <div id="form-simple" class="hidden">
+      <!-- Sub-mode selector: Video vs Image -->
+      <div class="glass-card rounded-xl p-3 mb-4 flex items-center gap-3">
+        <label class="text-sm text-gray-400 whitespace-nowrap" data-i18n="subModeLabel">生成类型</label>
+        <select id="simple_sub_mode" onchange="switchSimpleSubMode()" class="flex-1 glass-input rounded-lg px-3 py-2 text-sm text-gray-100">
+          <option value="video" data-i18n="subModeVideo">🎬 视频</option>
+          <option value="image" data-i18n="subModeImage">🖼️ 图像</option>
+        </select>
+      </div>
+
+      <!-- ── Video sub-form ── -->
+      <div id="form-simple-video">
       <div class="glass-card rounded-2xl p-6 mb-4">
         <h2 class="text-lg font-semibold text-blue-300 mb-4" data-i18n="simpleSettings">简单视频设置</h2>
 
@@ -259,6 +267,70 @@
       <button id="btn-simple" onclick="submitSimple()" class="w-full py-3.5 bg-gradient-to-r from-blue-600 via-blue-500 to-blue-600 hover:from-blue-500 hover:via-blue-400 hover:to-blue-500 rounded-xl text-base font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed glow-btn" data-i18n="startGenerate">
         开始生成视频
       </button>
+      </div><!-- /form-simple-video -->
+
+      <!-- ── Image sub-form ── -->
+      <div id="form-simple-image" class="hidden">
+      <div class="glass-card rounded-2xl p-6 mb-4">
+        <h2 class="text-lg font-semibold text-blue-300 mb-4" data-i18n="imageSettings">图片设置</h2>
+
+        <div class="mb-4">
+          <label class="block text-sm text-gray-400 mb-1.5"><span data-i18n="imagePrompt">图片描述</span> (prompt) <span class="text-red-400">*</span></label>
+          <textarea id="i_prompt" rows="3" data-i18n-placeholder="imagePromptPlaceholder" placeholder="描述你想要的图片画面..." class="w-full glass-input rounded-lg px-4 py-2.5 text-sm resize-y text-gray-100 placeholder-gray-600"></textarea>
+        </div>
+
+        <div class="mb-4">
+          <label class="block text-sm text-gray-400 mb-1.5" data-i18n="imageSize">图片尺寸</label>
+          <select id="i_size" class="w-full glass-input rounded-lg px-3 py-2.5 text-sm text-gray-100">
+            <option value="1024x1024" data-i18n="resSquare">方形 1:1 (1024x1024)</option>
+            <option value="768x1152" data-i18n="resPortrait">竖屏 9:16 (768x1152)</option>
+            <option value="1152x768" data-i18n="resLandscape">横屏 16:9 (1152x768)</option>
+            <option value="768x1344">竖屏 9:16 HD (768x1344)</option>
+            <option value="1344x768">横屏 16:9 HD (1344x768)</option>
+            <option value="1024x1792">竖屏 9:18 (1024x1792)</option>
+            <option value="1792x1024">横屏 18:9 (1792x1024)</option>
+          </select>
+        </div>
+
+        <div class="mb-4">
+          <label class="block text-sm text-gray-400 mb-1.5" data-i18n="refImageSimple">参考图</label>
+          <div class="flex items-center gap-4">
+            <label class="cursor-pointer px-4 py-2.5 glass-input rounded-lg text-sm transition inline-block hover:border-blue-500/30">
+              <span data-i18n="chooseImage">选择参考图</span>
+              <input id="i_ref_image" type="file" accept="image/*" class="hidden" onchange="updateLabel('i_ref_image','i_ref_name')">
+            </label>
+            <span id="i_ref_name" class="text-sm text-gray-500" data-i18n="notSelected">未选择</span>
+          </div>
+          <p class="text-xs text-gray-500 mt-1" data-i18n="refImageHint">可选。上传后以该图为基底生成变体；不上传则纯 AI 生成</p>
+        </div>
+
+        <div class="border-t border-white/5 pt-4 mt-4">
+          <div class="collapse-header flex items-center justify-between" onclick="toggleCollapse('i_advanced')">
+            <span class="text-sm text-gray-400" data-i18n="advancedSettings">高级设置</span>
+            <span id="i_advanced-arrow" class="text-gray-500 text-xs">▶</span>
+          </div>
+          <div id="i_advanced" class="collapse-body hidden mt-3">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1.5">Negative Prompt (<span data-i18n="optional">可选</span>)</label>
+              <input id="i_negative" data-i18n-placeholder="negativePlaceholder" placeholder="排除不希望出现的元素" class="w-full glass-input rounded-lg px-3 py-2.5 text-sm text-gray-100">
+            </div>
+            <div class="mt-4">
+              <label class="block text-sm text-gray-400 mb-1.5"><span data-i18n="systemPrompt">系统提示词</span> (<span data-i18n="optional">可选</span>)</label>
+              <textarea id="i_system" rows="2" data-i18n-placeholder="systemPromptPlaceholder" placeholder="给模型的额外提示指令（如风格、质量要求），不影响生成内容的主体描述" class="w-full glass-input rounded-lg px-4 py-2.5 text-sm resize-y text-gray-100 placeholder-gray-600"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-image" onclick="submitImage()" class="w-full py-3.5 bg-gradient-to-r from-blue-600 via-blue-500 to-blue-600 hover:from-blue-500 hover:via-blue-400 hover:to-blue-500 rounded-xl text-base font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed glow-btn" data-i18n="imgGenerate">
+        开始生成图片
+      </button>
+
+      <div id="image-result" class="hidden mt-4 p-4 glass-card rounded-lg">
+        <p class="text-green-400 text-sm font-medium mb-2" data-i18n="imgComplete">图片生成完成!</p>
+        <img id="result-image" class="w-full rounded-lg max-h-96 object-contain">
+      </div>
+      </div><!-- /form-simple-image -->
     </div>
 
     <!-- ═══════ Tab 2: Creative Video ═══════ -->
@@ -791,69 +863,6 @@
       </button>
     </div>
 
-    <!-- ═══════ Tab 5: Simple Image ═══════ -->
-    <div id="form-image" class="hidden">
-      <div class="glass-card rounded-2xl p-6 mb-4">
-        <h2 class="text-lg font-semibold text-blue-300 mb-4" data-i18n="imageSettings">图片设置</h2>
-
-        <div class="mb-4">
-          <label class="block text-sm text-gray-400 mb-1.5"><span data-i18n="imagePrompt">图片描述</span> (prompt) <span class="text-red-400">*</span></label>
-          <textarea id="i_prompt" rows="3" data-i18n-placeholder="imagePromptPlaceholder" placeholder="描述你想要的图片画面..." class="w-full glass-input rounded-lg px-4 py-2.5 text-sm resize-y text-gray-100 placeholder-gray-600"></textarea>
-        </div>
-
-        <div class="mb-4">
-          <label class="block text-sm text-gray-400 mb-1.5" data-i18n="imageSize">图片尺寸</label>
-          <select id="i_size" class="w-full glass-input rounded-lg px-3 py-2.5 text-sm text-gray-100">
-            <option value="1024x1024" data-i18n="resSquare">方形 1:1 (1024x1024)</option>
-            <option value="768x1152" data-i18n="resPortrait">竖屏 9:16 (768x1152)</option>
-            <option value="1152x768" data-i18n="resLandscape">横屏 16:9 (1152x768)</option>
-            <option value="768x1344">竖屏 9:16 HD (768x1344)</option>
-            <option value="1344x768">横屏 16:9 HD (1344x768)</option>
-            <option value="1024x1792">竖屏 9:18 (1024x1792)</option>
-            <option value="1792x1024">横屏 18:9 (1792x1024)</option>
-          </select>
-        </div>
-
-        <div class="mb-4">
-          <label class="block text-sm text-gray-400 mb-1.5" data-i18n="refImageSimple">参考图</label>
-          <div class="flex items-center gap-4">
-            <label class="cursor-pointer px-4 py-2.5 glass-input rounded-lg text-sm transition inline-block hover:border-blue-500/30">
-              <span data-i18n="chooseImage">选择参考图</span>
-              <input id="i_ref_image" type="file" accept="image/*" class="hidden" onchange="updateLabel('i_ref_image','i_ref_name')">
-            </label>
-            <span id="i_ref_name" class="text-sm text-gray-500" data-i18n="notSelected">未选择</span>
-          </div>
-          <p class="text-xs text-gray-500 mt-1" data-i18n="refImageHint">可选。上传后以该图为基底生成变体；不上传则纯 AI 生成</p>
-        </div>
-
-        <div class="border-t border-white/5 pt-4 mt-4">
-          <div class="collapse-header flex items-center justify-between" onclick="toggleCollapse('i_advanced')">
-            <span class="text-sm text-gray-400" data-i18n="advancedSettings">高级设置</span>
-            <span id="i_advanced-arrow" class="text-gray-500 text-xs">▶</span>
-          </div>
-          <div id="i_advanced" class="collapse-body hidden mt-3">
-            <div>
-              <label class="block text-sm text-gray-400 mb-1.5">Negative Prompt (<span data-i18n="optional">可选</span>)</label>
-              <input id="i_negative" data-i18n-placeholder="negativePlaceholder" placeholder="排除不希望出现的元素" class="w-full glass-input rounded-lg px-3 py-2.5 text-sm text-gray-100">
-            </div>
-            <div class="mt-4">
-              <label class="block text-sm text-gray-400 mb-1.5"><span data-i18n="systemPrompt">系统提示词</span> (<span data-i18n="optional">可选</span>)</label>
-              <textarea id="i_system" rows="2" data-i18n-placeholder="systemPromptPlaceholder" placeholder="给模型的额外提示指令（如风格、质量要求），不影响生成内容的主体描述" class="w-full glass-input rounded-lg px-4 py-2.5 text-sm resize-y text-gray-100 placeholder-gray-600"></textarea>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <button id="btn-image" onclick="submitImage()" class="w-full py-3.5 bg-gradient-to-r from-blue-600 via-blue-500 to-blue-600 hover:from-blue-500 hover:via-blue-400 hover:to-blue-500 rounded-xl text-base font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed glow-btn" data-i18n="imgGenerate">
-        开始生成图片
-      </button>
-
-      <div id="image-result" class="hidden mt-4 p-4 glass-card rounded-lg">
-        <p class="text-green-400 text-sm font-medium mb-2" data-i18n="imgComplete">图片生成完成!</p>
-        <img id="result-image" class="w-full rounded-lg max-h-96 object-contain">
-      </div>
-    </div>
-
   </div>
 
   <!-- ═══════════ List Panel ═══════════ -->
@@ -902,7 +911,8 @@ const T = {
     clear: '清除', clearConfirm: '确定要清除已配置的 API Key 吗？', apiKeyFromEnv: '已配置 (环境变量)',
     clearEnvHint: '当前 API Key 来自环境变量 AGNES_API_KEY，无法从界面清除。请取消环境变量后重试。',
     tabCreate: '新建任务', tabList: '任务列表',
-    ttSimple: '简单视频', ttCreative: '创意长视频', ttManuscript: '稿件长视频',
+    ttSimple: '简易图像视频', ttCreative: '创意长视频', ttManuscript: '稿件长视频',
+    subModeLabel: '生成类型', subModeVideo: '🎬 视频', subModeImage: '🖼️ 图像',
     simpleSettings: '简单视频设置', creativeSettings: '创意设置', manuscriptSettings: '稿件设置',
     promptLabel: '视频描述', promptPlaceholder: '描述你想要的视频画面...',
     genMode: '生成模式', modeT2v: '文生视频', modeI2v: '图生视频', modeKeyframesSimple: '关键帧',
@@ -996,7 +1006,8 @@ const T = {
     clear: 'Clear', clearConfirm: 'Are you sure you want to clear the configured API Key?', apiKeyFromEnv: 'Configured (env)',
     clearEnvHint: 'The API Key is set via environment variable AGNES_API_KEY and cannot be cleared from the UI.',
     tabCreate: 'New Task', tabList: 'Task List',
-    ttSimple: 'Simple Video', ttCreative: 'Creative Video', ttManuscript: 'Article Video',
+    ttSimple: 'Image & Video', ttCreative: 'Creative Video', ttManuscript: 'Article Video',
+    subModeLabel: 'Type', subModeVideo: '🎬 Video', subModeImage: '🖼️ Image',
     simpleSettings: 'Simple Video Settings', creativeSettings: 'Creative Settings', manuscriptSettings: 'Article Settings',
     promptLabel: 'Video Description', promptPlaceholder: 'Describe the video you want...',
     genMode: 'Generation Mode', modeT2v: 'Text to Video', modeI2v: 'Image to Video', modeKeyframesSimple: 'Keyframes',
@@ -1087,7 +1098,8 @@ const T = {
     clear: 'Очистить', clearConfirm: 'Вы уверены, что хотите удалить API Key?', apiKeyFromEnv: 'Настроен (env)',
     clearEnvHint: 'API Key задан через переменную AGNES_API_KEY и не может быть удалён из интерфейса.',
     tabCreate: 'Новая задача', tabList: 'Список задач',
-    ttSimple: 'Простое видео', ttCreative: 'Креативное видео', ttManuscript: 'Видео из статьи',
+    ttSimple: 'Изобр. и видео', ttCreative: 'Креативное видео', ttManuscript: 'Видео из статьи',
+    subModeLabel: 'Тип', subModeVideo: '🎬 Видео', subModeImage: '🖼️ Изображение',
     simpleSettings: 'Настройки простого видео', creativeSettings: 'Настройки сценария', manuscriptSettings: 'Настройки статьи',
     promptLabel: 'Описание видео', promptPlaceholder: 'Опишите желаемое видео...',
     genMode: 'Режим', modeT2v: 'Текст в видео', modeI2v: 'Изображение в видео', modeKeyframesSimple: 'Ключевые кадры',
@@ -1176,7 +1188,8 @@ const T = {
     clear: 'クリア', clearConfirm: '設定済みのAPI Keyを削除しますか？', apiKeyFromEnv: '設定済み (環境変数)',
     clearEnvHint: 'API Keyは環境変数 AGNES_API_KEY で設定されているため、画面から削除できません。',
     tabCreate: '新規タスク', tabList: 'タスク一覧',
-    ttSimple: 'シンプル動画', ttCreative: 'クリエイティブ動画', ttManuscript: '記事動画',
+    ttSimple: '画像＆動画', ttCreative: 'クリエイティブ動画', ttManuscript: '記事動画',
+    subModeLabel: '生成タイプ', subModeVideo: '🎬 動画', subModeImage: '🖼️ 画像',
     simpleSettings: 'シンプル設定', creativeSettings: 'クリエイティブ設定', manuscriptSettings: '記事設定',
     promptLabel: '動画説明', promptPlaceholder: '希望する動画を記述...',
     genMode: 'モード', modeT2v: 'テキスト→動画', modeI2v: '画像→動画', modeKeyframesSimple: 'キーフレーム',
@@ -1262,7 +1275,8 @@ const T = {
     clear: '초기화', clearConfirm: '설정된 API Key를 삭제하시겠습니까?', apiKeyFromEnv: '설정됨 (환경변수)',
     clearEnvHint: 'API Key가 환경변수 AGNES_API_KEY로 설정되어 있어 화면에서 삭제할 수 없습니다.',
     tabCreate: '새 작업', tabList: '작업 목록',
-    ttSimple: '간단 영상', ttCreative: '크리에이티브 영상', ttManuscript: '기사 영상',
+    ttSimple: '이미지 & 영상', ttCreative: '크리에이티브 영상', ttManuscript: '기사 영상',
+    subModeLabel: '생성 유형', subModeVideo: '🎬 영상', subModeImage: '🖼️ 이미지',
     simpleSettings: '간단 설정', creativeSettings: '크리에이티브 설정', manuscriptSettings: '기사 설정',
     promptLabel: '영상 설명', promptPlaceholder: '원하는 영상을 설명하세요...',
     genMode: '모드', modeT2v: '텍스트→영상', modeI2v: '이미지→영상', modeKeyframesSimple: '키프레임',
@@ -1348,7 +1362,8 @@ const T = {
     clear: 'Padam', clearConfirm: 'Pasti mahu padam API Key?', apiKeyFromEnv: 'Sudah (env)',
     clearEnvHint: 'API Key ditetapkan melalui pembolehubah AGNES_API_KEY dan tidak boleh dipadam dari UI.',
     tabCreate: 'Tugas Baru', tabList: 'Senarai Tugas',
-    ttSimple: 'Video Ringkas', ttCreative: 'Video Kreatif', ttManuscript: 'Video Artikel',
+    ttSimple: 'Imej & Video', ttCreative: 'Video Kreatif', ttManuscript: 'Video Artikel',
+    subModeLabel: 'Jenis', subModeVideo: '🎬 Video', subModeImage: '🖼️ Imej',
     simpleSettings: 'Tetapan Ringkas', creativeSettings: 'Tetapan Kreatif', manuscriptSettings: 'Tetapan Artikel',
     promptLabel: 'Penerangan Video', promptPlaceholder: 'Terangkan video yang diingini...',
     genMode: 'Mod', modeT2v: 'Teks ke Video', modeI2v: 'Imej ke Video', modeKeyframesSimple: 'Bingkai Kunci',
@@ -1434,7 +1449,8 @@ const T = {
     clear: 'Hapus', clearConfirm: 'Yakin ingin menghapus API Key?', apiKeyFromEnv: 'Sudah (env)',
     clearEnvHint: 'API Key diatur melalui variabel AGNES_API_KEY dan tidak dapat dihapus dari UI.',
     tabCreate: 'Tugas Baru', tabList: 'Daftar Tugas',
-    ttSimple: 'Video Simpel', ttCreative: 'Video Kreatif', ttManuscript: 'Video Artikel',
+    ttSimple: 'Gambar & Video', ttCreative: 'Video Kreatif', ttManuscript: 'Video Artikel',
+    subModeLabel: 'Jenis', subModeVideo: '🎬 Video', subModeImage: '🖼️ Gambar',
     simpleSettings: 'Pengaturan Simpel', creativeSettings: 'Pengaturan Kreatif', manuscriptSettings: 'Pengaturan Artikel',
     promptLabel: 'Deskripsi Video', promptPlaceholder: 'Jelaskan video yang diinginkan...',
     genMode: 'Mode', modeT2v: 'Teks ke Video', modeI2v: 'Gambar ke Video', modeKeyframesSimple: 'Keyframe',
@@ -1696,9 +1712,15 @@ function switchTaskType(type) {
   });
   document.getElementById('ttype-' + type).className = document.getElementById('ttype-' + type).className.replace(/tab-inactive/, 'tab-active');
 
-  ['simple', 'creative', 'manuscript', 'anchor', 'image'].forEach(t => {
+  ['simple', 'creative', 'manuscript', 'anchor'].forEach(t => {
     document.getElementById('form-' + t).classList.toggle('hidden', t !== type);
   });
+}
+
+function switchSimpleSubMode() {
+  const mode = document.getElementById('simple_sub_mode').value;
+  document.getElementById('form-simple-video').classList.toggle('hidden', mode !== 'video');
+  document.getElementById('form-simple-image').classList.toggle('hidden', mode !== 'image');
 }
 
 // ═══════════════════════════════════════════════════
