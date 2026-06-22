@@ -349,16 +349,14 @@ agnes-video-generator/
 
 | ID | 类型 | 场景 | 权重 |
 |----|------|------|------|
-| S1 | 简单视频 | 纯文本 t2v | 1 |
-| S2 | 简单视频 | 图生视频 ti2vid | 1 |
-| S3 | 简单视频 | 关键帧动画 keyframes | 1 |
-| C1 | 创意视频 | 清晨小镇+独立+无配音 | 4 |
-| C2 | 创意视频 | 带参考图+关键帧+无配音 | 4 |
-| C3 | 创意视频 | 参考图生成尾帧+关键帧+无配音 | 3 |
-| C4 | 创意视频 | 独立场景+配音字幕验证 | 3 |
-| C5 | 创意视频 | 链式续传 ti2vid+无配音 | 4 |
+| S1 | 简单视频 | 关键帧动画 keyframes | 1 |
+| C1 | 创意视频 | 带参考图+关键帧+无配音 | 3 |
+| C2 | 创意视频 | 参考图生成尾帧+关键帧+无配音 | 3 |
+| C3 | 创意视频 | 带字幕+配音+关键帧 | 3 |
 | M1 | 稿件视频 | 短稿件+配音 | 4 |
 | M2 | 稿件视频 | 短稿件+自定义字幕 | 4 |
+| A1 | 数字人口播 | 数字人+后拼接音频 | 2 |
+| A2 | 数字人口播 | 数字人+模型音频 | 2 |
 
 ### 执行命令
 
@@ -371,11 +369,25 @@ python scripts/regression_runner.py --resume --auto-start
 
 # 仅验证已存在产物
 python scripts/regression_runner.py --quick
+
+# 单独执行某个场景（避免主 agent 内大量轮询）
+python scripts/scene_runner.py --scenario C3
+
+# 端点验证
+python scripts/scene_runner.py --endpoints
 ```
 
 ### 报告与问题处理
 
-回归完成后输出 `docs/regression_report.json` + `docs/regression_report.md`。失败场景按原因分两类处理：
+回归完成后输出三个报告文件：
+
+| 文档 | 路径 | 内容 |
+|------|------|------|
+| JSON 数据 | `docs/regression_report.json` | 结构化数据，用于续传和程序化分析 |
+| 测试报告 | `docs/regression_report.md` | 全部场景的执行结果、检查项、端点验证 |
+| 问题清单 | `docs/regression_issues.md` | 仅包含失败/异常/需关注的项目 |
+
+失败场景按原因分两类处理：
 
 - **可恢复**（超时、API 故障、网络异常）→ `--resume` 续传重试
 - **不可恢复**（HTTP 400 提示词错误）→ 记录具体原因，跳过，等用户确认后修复

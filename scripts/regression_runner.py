@@ -48,6 +48,7 @@ WORKING_DIR = os.path.join(PROJECT_ROOT, ".working_dir")
 UPLOAD_DIR = os.path.join(WORKING_DIR, "uploads")
 REPORT_PATH = os.path.join(PROJECT_ROOT, "docs", "regression_report.json")
 REPORT_MD_PATH = os.path.join(PROJECT_ROOT, "docs", "regression_report.md")
+ISSUES_MD_PATH = os.path.join(PROJECT_ROOT, "docs", "regression_issues.md")
 SERVER_URL = "http://localhost:8765"
 SERVER_LOG = os.path.join(PROJECT_ROOT, ".regression_server.log")
 MANIFEST_PATH = os.path.join(WORKING_DIR, ".regression_manifest.json")
@@ -61,7 +62,7 @@ AGNES_RATE_LIMIT = 20          # 次/分钟
 # 留 50% 余量 => 总权重上限 = AGNES_RATE_LIMIT / 2 = 10
 SCENARIO_WEIGHTS = {
     "S1": 1,                          # 简单 keyframes: 1 submit + 轻量轮询
-    "C1": 3, "C2": 3,                 # 创意 keyframes: Chat + N*Image + N*Video + 轮询
+    "C1": 3, "C2": 3, "C3": 3,        # 创意 keyframes: Chat + N*Image + N*Video + 轮询
     "M1": 4, "M2": 4,                 # 稿件: 段落*Chat + 段落*Image + 轮询
     "A1": 2, "A2": 2,                 # 数字人: 1 i2v submit + 轻量轮询
 }
@@ -154,6 +155,17 @@ SCENARIO_DEFS = [
          "use_custom_end_frames": True,
          "generate_end_frames_from_ref": True},
         TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C2"], requires_ref_image=True),
+
+    ScenarioConfig("C3", "带字幕+配音+关键帧", "creative",
+        "/api/tasks/creative",
+        {"idea": "海边日落时分的浪漫故事",
+         "user_requirement": "3个场景，每个场景5秒，电影质感",
+         "style": "电影质感写实风格", "chaining_mode": "keyframes",
+         "video_duration": 5,
+         "audio_enabled": True,
+         "audio_voice": "zh-CN-XiaoxiaoNeural",
+         "subtitle_enabled": True},
+        TIMEOUT_CREATIVE, SCENARIO_WEIGHTS["C3"]),
 
     # ── 稿件视频（短文本，激活拆段算法）──
     ScenarioConfig("M1", "短稿件+配音", "manuscript",
@@ -445,7 +457,7 @@ class ReportManager:
 
         for type_label, type_key, type_ids in [
             ("简单视频 (Simple)", "simple", ["S1"]),
-            ("创意视频 (Creative)", "creative", ["C1", "C2"]),
+            ("创意视频 (Creative)", "creative", ["C1", "C2", "C3"]),
             ("稿件视频 (Manuscript)", "manuscript", ["M1", "M2"]),
             ("数字人口播 (Anchor)", "anchor", ["A1", "A2"]),
         ]:
@@ -556,6 +568,111 @@ class ReportManager:
             f.write(content)
         logger.info(f"MD 报告: {report_md_path}")
 
+    def generate_issues_report(self, issues_md_path: str):
+        """生成问题清单文档，仅包含失败/异常/需关注的项目。"""
+        d = self.data
+        sc = d["scenarios"]
+        ep = d["endpoints"]
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        lines = []
+        lines.append(f"# Agnes Video Generator v2.0 — 回归测试问题清单")
+        lines.append(f"")
+        lines.append(f"| 元数据 | 值 |")
+        lines.append(f"|--------|-----|")
+        lines.append(f"| 日期 | {now} |")
+        lines.append(f"| 版本 | {d.get('git_commit', 'unknown')} |")
+        lines.append(f"")
+
+        # ── 场景问题 ──
+        lines.append(f"## 一、场景执行问题")
+        lines.append(f"")
+        has_scenario_issues = False
+
+        for sid, sdata in sorted(sc.items()):
+            st = sdata.get("status", "")
+            errs = sdata.get("errors") or []
+            chk = (sdata.get("result") or {}).get("checks") or {}
+            failed_checks = [k for k, v in chk.items()
+                           if v is False and not any(
+                               k.endswith(x) for x in
+                               ("_width", "_height", "_duration", "_count",
+                                "_entries", "F2_duration"))]
+
+            if st == "failed" or errs or failed_checks:
+                has_scenario_issues = True
+                label = sdata.get("label", sid)
+                duration = (sdata.get("result") or {}).get("duration_s", "?")
+                lines.append(f"### {sid} {label}")
+                lines.append(f"")
+                lines.append(f"- **状态**: {st}")
+                lines.append(f"- **耗时**: {duration}s")
+
+                if errs:
+                    lines.append(f"- **错误信息**:")
+                    for e in errs:
+                        lines.append(f"  - `{e}`")
+
+                if failed_checks:
+                    lines.append(f"- **失败检查项**:")
+                    for fc in failed_checks:
+                        val = chk.get(fc)
+                        lines.append(f"  - `{fc}`: {val}")
+
+                task_id = (sdata.get("result") or {}).get("task_id", "")
+                dir_name = (sdata.get("result") or {}).get("dir_name", "")
+                if task_id:
+                    lines.append(f"- **task_id**: `{task_id}`")
+                if dir_name:
+                    lines.append(f"- **目录**: `{dir_name}`")
+                lines.append(f"")
+
+        if not has_scenario_issues:
+            lines.append(f"无场景执行问题。")
+            lines.append(f"")
+
+        # ── 端点问题 ──
+        lines.append(f"## 二、端点验证问题")
+        lines.append(f"")
+        has_ep_issues = False
+        for eid in sorted(ep.keys()):
+            e = ep[eid]
+            if e["status"] != "passed":
+                has_ep_issues = True
+                lines.append(f"- **{eid}**: {e.get('detail', 'unknown')}")
+        if not has_ep_issues:
+            lines.append(f"无端点问题。")
+        lines.append(f"")
+
+        # ── 需手动验证 ──
+        lines.append(f"## 三、需手动验证项")
+        lines.append(f"")
+        lines.append(f"| 检查项 | 场景 | 操作 |")
+        lines.append(f"|--------|------|------|")
+        for sid, sdata in sorted(sc.items()):
+            if sdata.get("status") == "completed":
+                lines.append(f"| F5 字幕可见性 | {sid} | 播放 final_video.mp4 确认字幕显示 |")
+        lines.append(f"")
+
+        # ── 汇总 ──
+        lines.append(f"## 四、问题汇总")
+        lines.append(f"")
+        total_issues = sum(
+            1 for sdata in sc.values()
+            if sdata.get("status") == "failed" or sdata.get("errors")
+        )
+        ep_issues = sum(1 for e in ep.values() if e["status"] != "passed")
+        lines.append(f"- 场景问题数: {total_issues}")
+        lines.append(f"- 端点问题数: {ep_issues}")
+        lines.append(f"- 总问题数: {total_issues + ep_issues}")
+        lines.append(f"")
+
+        content = "\n".join(lines)
+        os.makedirs(os.path.dirname(issues_md_path), exist_ok=True)
+        with open(issues_md_path, "w") as f:
+            f.write(content)
+        logger.info(f"问题清单: {issues_md_path}")
+
 
 # ═══════════════════════════════════════════════════
 # 回归测试产物清单
@@ -578,6 +695,7 @@ class RegressionManifest:
             "reports": [
                 os.path.relpath(REPORT_PATH, PROJECT_ROOT),
                 os.path.relpath(REPORT_MD_PATH, PROJECT_ROOT),
+                os.path.relpath(ISSUES_MD_PATH, PROJECT_ROOT),
             ],
             "server_log": os.path.relpath(SERVER_LOG, PROJECT_ROOT),
             "scenarios": {},        # scenario_id -> {task_id, dir_name, status}
@@ -1660,6 +1778,7 @@ async def main(resume: bool = False, auto_start: bool = False,
         await verify_endpoints(report)
         report._save()
         report.generate_md_report(REPORT_MD_PATH)
+        report.generate_issues_report(ISSUES_MD_PATH)
         manifest.save()
         report.print_summary()
         return 0
@@ -1694,12 +1813,14 @@ async def main(resume: bool = False, auto_start: bool = False,
     await verify_endpoints(report)
     report._save()
     report.generate_md_report(REPORT_MD_PATH)
+    report.generate_issues_report(ISSUES_MD_PATH)
     manifest.save()
 
     passed = report.data["summary"]["failed"] == 0
     report.print_summary()
     logger.info(f"JSON 报告: {REPORT_PATH}")
     logger.info(f"MD  报告: {REPORT_MD_PATH}")
+    logger.info(f"问题清单: {ISSUES_MD_PATH}")
     logger.info(f"产物清单: {MANIFEST_PATH}")
     return 0 if passed else 1
 

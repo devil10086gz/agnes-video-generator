@@ -10,10 +10,10 @@
 | 任务类型 | 测试场景数 | 涉及核心模块 |
 |----------|-----------|-------------|
 | 简单视频 (Type 1) | 1 | `simple_video.py`, `agnes_video.py`, `task_manager.py` |
-| 创意视频 (Type 2) | 2 | `creative_video.py`, `agnes_image.py`, `agnes_video.py`, `screenwriter.py` |
+| 创意视频 (Type 2) | 3 | `creative_video.py`, `agnes_image.py`, `agnes_video.py`, `screenwriter.py`, `tts.py`, `subtitle.py` |
 | 稿件视频 (Type 3) | 2 | `manuscript_video.py`, `agnes_video.py`, `screenwriter.py`, `tts.py`, `subtitle.py`, `concatenator.py` |
 | 数字人口播 (Type 4) | 2 | `anchor_video.py`, `agnes_image.py`, `agnes_video.py`, `screenwriter.py`, `tts.py`, `subtitle.py`, `concatenator.py` |
-| **总计** | **7** | |
+| **总计** | **8** | |
 
 ---
 
@@ -32,9 +32,10 @@
 仅测试 keyframes 模式（three 拼接模式精简掉，只测最复杂的 keyframes）：
 
 | ID | 场景 | chaining_mode | 参考图 | 配音 | 覆盖要点 |
-|----|------|--------------|--------|------|---------|
+|----|------|--------------|--------|------|----------|
 | C1 | 带参考图+关键帧+无配音 | keyframes | 上传参考图 | 关闭 | 参考图上传、端帧生成、keyframes 提交 |
 | C2 | 参考图生成尾帧+关键帧+无配音 | keyframes | 上传参考图 | 关闭 | `generate_end_frames_from_ref`、i2i 端帧生成、keyframes |
+| C3 | 带字幕+配音+关键帧 | keyframes | 无 | 开启 | TTS 旁白 + 字幕叠加 + 视频拼接 + keyframes |
 
 ### 2.3 稿件视频 (ManuscriptVideoPipeline)
 
@@ -134,16 +135,40 @@
 4. 确保 .working_dir/ 中无残留任务
 ```
 
-### 4.2 并发执行
+### 4.2 执行方式
 
-使用 `scripts/regression_runner.py` 自动完成。
+使用 `scripts/regression_runner.py` 自动完成全部场景并发执行。
+
+也可以使用 `scripts/scene_runner.py` 单独执行某个场景，避免主 agent 内大量轮询造成上下文爆炸：
+
+```bash
+# 列出所有可用场景
+python scripts/scene_runner.py --list
+
+# 执行单个场景（返回 JSON 结果到 stdout，日志输出到 stderr）
+python scripts/scene_runner.py --scenario C3
+
+# 执行端点验证
+python scripts/scene_runner.py --endpoints
+
+# 仅验证已有产物
+python scripts/scene_runner.py --scenario C3 --validate-only --dir <dir_name>
+
+# 续传已有任务
+python scripts/scene_runner.py --scenario C3 --resume --task-id <task_id>
+```
+
+`scene_runner.py` 的输出格式：
+- **stdout**: JSON 结果（包含 status, checks, errors, task_id, dir_name 等）
+- **stderr**: 执行日志
+- **退出码**: 0=成功, 1=失败, 2=超时, 3=参数错误
 
 #### 并行度控制
 
 | 场景类型 | 权重 |
 |---------|------|
 | 简单 (S1) | 1 |
-| 创意 (C1-C2) | 3-3 |
+| 创意 (C1-C3) | 3-3-3 |
 | 稿件 (M1-M2) | 4-4 |
 | 数字人 (A1-A2) | 2-2 |
 
@@ -164,7 +189,12 @@ python scripts/regression_runner.py --quick
 
 ### 4.3 报告与续传
 
-测试过程中 `docs/regression_report.json` 即时更新。
+测试过程中 `docs/regression_report.json` 即时更新，完成后生成两个文档：
+
+| 文档 | 路径 | 内容 |
+|------|------|------|
+| 测试报告 | `docs/regression_report.md` | 全部场景的执行结果、检查项、端点验证 |
+| 问题清单 | `docs/regression_issues.md` | 仅包含失败/异常/需关注的项目 |
 
 ```bash
 # 中断后恢复
@@ -201,8 +231,9 @@ python scripts/regression_runner.py --resume
 二、创意视频 (Creative)
 ────────────────────────────────────────────────
 
-  C1 [带参考图+关键帧]       — ✅
-  C2 [参考图生成尾帧+关键帧] — ✅
+  C1 [带参考图+关键帧]         — ✅
+  C2 [参考图生成尾帧+关键帧]   — ✅
+  C3 [带字幕+配音+关键帧]      — ✅
 
 ────────────────────────────────────────────────
 三、稿件视频 (Manuscript)
@@ -269,6 +300,7 @@ for name, color in [('test_ref.png', (100,150,200)), ('test_end.png', (200,150,1
 | S1 | `/api/tasks/simple` | mode=keyframes, ref+end | 30m |
 | C1 | `/api/tasks/creative` | chaining_mode=keyframes, ref | 120m |
 | C2 | `/api/tasks/creative` | keyframes+end_frame_from_ref | 120m |
+| C3 | `/api/tasks/creative` | keyframes, audio+subtitle | 120m |
 | M1 | `/api/tasks/manuscript` | 8句稿件, audio_enabled | 60m |
 | M2 | `/api/tasks/manuscript` | 自定义字幕样式 | 60m |
 | A1 | `/api/tasks/anchor` | audio_source=post_stitch | 60m |

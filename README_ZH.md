@@ -1,6 +1,10 @@
 # 🎬 Agnes Video Generator — 完全免费的 AI 视频生成工具
 
 [![English](https://img.shields.io/badge/EN-English-blue)](/README.md)
+[![GitHub Stars](https://img.shields.io/github/stars/lcy362/agnes-video-generator?style=social)](https://github.com/lcy362/agnes-video-generator)
+[![License](https://img.shields.io/github/license/lcy362/agnes-video-generator)](https://github.com/lcy362/agnes-video-generator/blob/main/LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://www.python.org/)
+[![Website](https://img.shields.io/badge/website-video.lichuanyang.top-8A2BE2)](https://video.lichuanyang.top)
 
 > **完全免费的 AI 视频生成工具** — 基于 Agnes AI 免费模型，无需订阅、无需高端显卡、没有用量限制。输入一段文字创意，就能自动生成带旁白配音和字幕的多场景 AI 视频。支持文生视频、图生视频、关键帧动画、数字人口播等多种模式，所有 AI 计算在云端完成，普通笔记本就能跑。
 
@@ -39,6 +43,25 @@
 我们相信 Bruce Yang 说的那句话——AI 应该是一种更平权的能力。世界级的 AI 应该属于每一个人，而不是只属于付得起账单的人。
 
 坦白讲，Agnes 的视频模型现在还不够完美。生成的画面有时不够稳定，复杂动作偶尔会变形。但它**完全免费、没有用量限制**，而且迭代速度很快。我们选择跟它一起成长，而不是等着一个「完美」的商业方案出现。如果你也认同这个想法，那么这个项目就是为你准备的——你只需要一个免费的 [Agnes AI](https://platform.agnes-ai.com) API Key 和一台能跑 Python 的普通电脑，就可以零成本开始 AI 视频创作。
+
+### 对比：Agnes 与商业 AI 视频工具
+
+| 特性 | Agnes Video Generator | Runway Gen-3 | Pika 2.0 | OpenAI Sora | 可灵 Kling 1.6 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| **价格** | 完全免费 | $15–$95/月 | $10–$28/月 | $20+/月（限量） | 免费额度后按秒计费 |
+| **开源** | ✅ 是（MIT） | ❌ 否 | ❌ 否 | ❌ 否 | ❌ 否 |
+| **自托管** | ✅ 支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
+| **单段最长时长** | 20秒，场景数不限 | 10秒 | 10秒 | 20秒 | 10秒 |
+| **多场景流水线** | ✅ 内置（创意/稿件模式） | ❌ 需手动编辑 | ❌ 需手动编辑 | ❌ 需手动编辑 | ❌ 需手动编辑 |
+| **AI 旁白配音** | ✅ 免费内置 | ❌ 需第三方 | ❌ 需第三方 | ❌ 不支持 | ❌ 不支持 |
+| **自动字幕** | ✅ 词级 SRT | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 | ❌ 不支持 |
+| **数字人口播** | ✅ 内置 | ❌ 无 | ❌ 无 | ❌ 无 | ❌ 无 |
+| **分辨率选项** | 9:16 / 16:9 / 1:1 | 多种 | 多种 | 多种 | 多种 |
+| **图生视频** | ✅ 支持 | ✅ 支持 | ✅ 支持 | ✅ 支持 | ✅ 支持 |
+| **关键帧动画** | ✅ 支持 | ✅ 支持 | ✅ 支持 | ❌ 不支持 | ❌ 不支持 |
+| **本地 GPU 需求** | ❌ 不需要（云端 API） | ❌ 不需要（云端） | ❌ 不需要（云端） | ❌ 不需要（云端） | ❌ 不需要（云端） |
+| **水印** | 无水印 | 内置水印 | 内置水印 | C2PA 元数据 | 内置水印 |
+| **使用限制** | 无限（16次/分钟限速） | 按计算量计费 | 按生成量计费 | 按生成量计费 | 按生成量计费 |
 
 ## ✨ 核心功能
 
@@ -395,4 +418,38 @@ MIT
 
 ---
 
-**关键词**：免费AI视频生成器, AI视频生成工具, 文字转视频AI, 免费AI视频制作, AI视频创作, 开源视频生成器, Agnes AI, 文生视频, 图生视频, 关键帧视频, AI旁白配音, 自动字幕, 多场景视频, 零成本AI视频, 无需订阅的AI视频工具, 数字人口播
+## ❓ 常见问题
+
+### Agnes Video Generator 真的完全免费吗？有没有隐藏费用？
+
+是的，**完全免费**。所有 AI 模型调用（Agnes Chat、Agnes Image、Agnes Video）均免费，无试用期、无水印、无用量限制。唯一的 TTS 集成（微软 Edge TTS）也是免费的，无需额外 API Key。你只需要从 [Agnes AI](https://platform.agnes-ai.com) 获取一个免费的 API Key 即可开始使用。
+
+### 运行这个 AI 视频生成器需要 GPU 吗？
+
+不需要。所有 AI 计算都在云端通过 Agnes AI 的免费 API 完成。你只需要一台能运行 Python 3.10+ 和 ffmpeg 的普通电脑，无需 GPU、无需大内存、无需任何特殊硬件。
+
+### 这个工具和 Runway、Pika、Sora 有什么不同？
+
+商业 AI 视频工具每月收费 $10–$95，而 Agnes Video Generator 完全免费且开源（MIT）。它还内置了多场景流水线、AI 旁白配音、自动字幕和数字人口播——这些功能在其他平台要么需要第三方工具，要么需要手动编辑。详见上方的[对比表格](#对比agnes-与商业-ai-视频工具)。
+
+### 支持哪些视频生成模式？
+
+四种模式：**简单视频**（单条 prompt，完整参数控制）、**创意长视频**（AI 故事 → 多场景视频 + 旁白）、**稿件长视频**（长文本 → 自动拆段 → 配音视频）、**数字人口播**（AI 数字人 + TTS）。额外支持文生视频、图生视频、关键帧动画、图生图尾帧等。
+
+### 可以使用自己的图片作为参考吗？
+
+可以。你可以上传参考图来保持角色或场景的一致性，使用自定义尾帧精确控制画面过渡，或选择 img2img 从参考图自动生成尾帧。创意长视频和数字人口播模式均支持参考图。
+
+### Web UI 支持哪些语言？
+
+界面支持 7 种语言：中文、English、Русский、日本語、한국어、Bahasa Melayu、Bahasa Indonesia。字幕以源文本语言生成，内置 CJK 字体支持。
+
+### 可以部署在自己的服务器上吗？
+
+完全可以。本项目专为自托管设计。克隆仓库后运行 `./start.sh`，服务即启动在 `http://localhost:8765`。无外部依赖、无云锁定。详见上方的[快速开始](#🚀-快速开始)。
+
+### 如何获取帮助或报告问题？
+
+请访问 [GitHub Issues](https://github.com/lcy362/agnes-video-generator/issues) 页面查看已有报告或提交新 Issue。项目还包含完整的 `AGENTS.md` 部署指引，支持 AI 编程助手辅助调试。
+
+**关键词**：免费AI视频生成器, AI视频生成工具, 文字转视频AI, 免费AI视频制作, AI视频创作, 开源视频生成器, Agnes AI, 文生视频, 图生视频, 关键帧视频, AI旁白配音, 自动字幕, 多场景视频, 零成本AI视频, 无需订阅的AI视频工具, 数字人口播, 自托管AI视频生成器, Runway开源替代
