@@ -1131,12 +1131,7 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
         checks["R10_srt_entries"] = "N/A"
         return checks
 
-    video = os.path.join(task_dir, "final_video.mp4")
-    ve = os.path.exists(video)
-    checks["F1_final_video_exists"] = ve
-    checks["F1_final_video_nonempty"] = os.path.getsize(video) > 0 if ve else False
-
-    # 提前加载 task_state，供 F7 和 R1-R4 共用
+    # 提前加载 task_state，供 F1/F7 和 R1-R4 共用
     ts = os.path.join(task_dir, "task_state.json")
     sd: dict = {}
     if os.path.exists(ts):
@@ -1145,6 +1140,16 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
                 sd = json.load(f)
         except Exception:
             pass
+
+    # F1: 优先从 task_state.json 读取 final_video_file（anchor 任务产出 clip/clip.mp4）
+    video = os.path.join(task_dir, "final_video.mp4")
+    if not os.path.exists(video):
+        fvf = sd.get("final_video_file", "")
+        if fvf and os.path.exists(fvf):
+            video = fvf
+    ve = os.path.exists(video)
+    checks["F1_final_video_exists"] = ve
+    checks["F1_final_video_nonempty"] = os.path.getsize(video) > 0 if ve else False
 
     if ve:
         try:
@@ -1258,8 +1263,8 @@ def _validate_sync(dir_name: str, scenario: ScenarioConfig) -> dict:
             audio_source = sd.get("audio_source", "post_stitch")
             _SKIPPABLE_STEPS = set()
             if audio_source == "model":
-                # 模型音频模式：跳过 audio/subtitle/concatenation 步骤
-                _SKIPPABLE_STEPS = {"step_subtitle", "step_concatenation"}
+                # 模型音频模式：跳过 split/prompts/audio/subtitle/concatenation 步骤
+                _SKIPPABLE_STEPS = {"step_split", "step_clip_prompts", "step_audio", "step_subtitle", "step_concatenation"}
             active_steps = {k: v for k, v in steps.items() if k not in _SKIPPABLE_STEPS}
             incomplete = [k for k, v in active_steps.items() if v != "completed"]
             checks["R3_all_completed"] = not incomplete if active_steps else "N/A"
