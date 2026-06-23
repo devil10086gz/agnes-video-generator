@@ -163,6 +163,8 @@ python scripts/scene_runner.py --scenario C3 --resume --task-id <task_id>
 - **stderr**: 执行日志
 - **退出码**: 0=成功, 1=失败, 2=超时, 3=参数错误
 
+验证项覆盖与 `regression_runner.py` 完全一致（F1-F7 最终产物、R1-R6 断点续传、R7-R10 音频/字幕），主 agent 可直接使用 JSON 结果无需重新验证。ASR 语音识别（F4_has_speech / F6_text_match）仅在 `regression_runner.py` 中执行（需 whisper），`scene_runner.py` 标记为 `"skip"`。
+
 #### 并行度控制
 
 | 场景类型 | 权重 |
@@ -308,4 +310,4 @@ for name, color in [('test_ref.png', (100,150,200)), ('test_end.png', (200,150,1
 
 ---
 
-*文档版本：v3.0 | 更新日期：2026-06-21*
+*文档版本：v3.1 | 更新日期：2026-06-23*

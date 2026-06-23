@@ -284,22 +284,53 @@ def _compute_expected_duration(task_state: dict, sc: ScenarioDef) -> Optional[fl
     return None
 
 
+_VIDEO_ID_RE = re.compile(r"agnesapi\?\S*video_id=|mode=\S*&video_id=")
+
+
+def _curl_has_valid_video_id(path: str) -> bool:
+    """严格匹配：要求 agnesapi?..video_id= 或 mode=..&video_id= 模式。"""
+    if not os.path.exists(path):
+        return False
+    with open(path) as f:
+        return bool(_VIDEO_ID_RE.search(f.read()))
+
+
 def validate_artifacts(dir_name: str, sc: ScenarioDef) -> dict:
-    """验证任务产物，返回 checks dict。"""
+    """验证任务产物，返回 checks dict。
+
+    与 regression_runner.py 的 _validate_sync 保持一致的检查项，
+    包括 F1-F7（最终产物）、R1-R6（断点续传）、R7-R10（音频/字幕）。
+    """
     task_dir = os.path.join(WORKING_DIR, dir_name)
     checks: dict[str, Any] = {}
 
+    # ── 防御：任务目录不存在 ──
     if not os.path.isdir(task_dir):
         checks["F1_final_video_exists"] = False
         checks["F1_final_video_nonempty"] = False
         checks["F2_duration"] = 0
         checks["F2_duration_gt_0"] = False
         checks["F4_has_audio_stream"] = False
+        checks["F4_has_speech"] = "N/A"
+        checks["F6_text_match"] = "N/A"
         checks["F7_duration_reasonable"] = False
         checks["R1_task_state_valid"] = False
+        checks["R2_task_type"] = None
         checks["R2_task_type_matches"] = False
+        checks["R3_step_count"] = 0
         checks["R3_all_completed"] = False
+        checks["R3_incomplete_steps"] = "task_dir missing"
         checks["R4_final_path_exists"] = False
+        checks["R5_task_json"] = False
+        checks["R5_has_video_id"] = False
+        checks["R6_curl_sh"] = False
+        checks["R6_has_video_id_in_curl"] = False
+        checks["R7_sub_dirs_exist"] = "N/A"
+        checks["R7_audio_files"] = "N/A"
+        checks["R8_subtitle_srt"] = "N/A"
+        checks["R9_full_narration"] = "N/A"
+        checks["R10_full_subtitle"] = "N/A"
+        checks["R10_srt_entries"] = "N/A"
         return checks
 
     video = os.path.join(task_dir, "final_video.mp4")
@@ -307,16 +338,17 @@ def validate_artifacts(dir_name: str, sc: ScenarioDef) -> dict:
     checks["F1_final_video_exists"] = ve
     checks["F1_final_video_nonempty"] = os.path.getsize(video) > 0 if ve else False
 
-    # 加载 task_state
-    ts = os.path.join(task_dir, "task_state.json")
+    # ── 加载 task_state ──
+    ts_path = os.path.join(task_dir, "task_state.json")
     sd: dict = {}
-    if os.path.exists(ts):
+    if os.path.exists(ts_path):
         try:
-            with open(ts) as f:
+            with open(ts_path) as f:
                 sd = json.load(f)
         except Exception:
             pass
 
+    # ── F2-F7: 视频元数据 ──
     if ve:
         try:
             from moviepy import VideoFileClip
@@ -344,6 +376,9 @@ def validate_artifacts(dir_name: str, sc: ScenarioDef) -> dict:
             logger.warning("moviepy 不可用，跳过视频元数据验证")
             checks["F2_duration"] = "skip"
             checks["F2_duration_gt_0"] = "skip"
+            checks["F3_width"] = "skip"
+            checks["F3_height"] = "skip"
+            checks["F3_resolution_matches"] = "skip"
             checks["F4_has_audio_stream"] = "skip"
             checks["F7_duration_reasonable"] = "skip"
         except Exception as e:
@@ -352,7 +387,7 @@ def validate_artifacts(dir_name: str, sc: ScenarioDef) -> dict:
             checks["F4_has_audio_stream"] = False
             checks["F7_duration_reasonable"] = False
 
-        # ASR 验证
+        # ASR 验证（scene_runner 不加载 whisper，标记为 skip）
         audio_enabled = sc.params.get("audio_enabled", True)
         is_simple = sd.get("task_type") == "simple"
         asr_eligible = (
@@ -372,45 +407,187 @@ def validate_artifacts(dir_name: str, sc: ScenarioDef) -> dict:
         checks["F2_duration_gt_0"] = False
         checks["F4_has_audio_stream"] = False
         checks["F7_duration_reasonable"] = False
+        checks["F4_has_speech"] = "N/A"
+        checks["F6_text_match"] = "N/A"
 
-    # R1-R4: task_state
+    # ── R1-R4: task_state.json ──
     if sd:
         checks["R1_task_state_valid"] = True
         checks["R2_task_type"] = sd.get("task_type", "?")
         checks["R2_task_type_matches"] = sd.get("task_type") == sc.type
+
+        # R3: step completion（含可跳过步骤逻辑）
         steps = {k: v for k, v in sd.items() if k.startswith("step_")}
         checks["R3_step_count"] = len(steps)
+
         if sc.type == "simple":
+            # simple 任务无 step_* 字段，用顶层 status 判断
             checks["R3_all_completed"] = sd.get("status") == "completed"
+            checks["R3_incomplete_steps"] = (
+                "" if checks["R3_all_completed"]
+                else "status=" + sd.get("status", "?")
+            )
+        elif sc.type == "anchor":
+            # anchor: 根据 audio_source 决定哪些 step 必须完成
+            audio_source = sd.get("audio_source", "post_stitch")
+            _skippable = set()
+            if audio_source == "model":
+                # 模型音频模式：跳过 audio/subtitle/concatenation 步骤
+                _skippable = {"step_subtitle", "step_concatenation"}
+            active_steps = {k: v for k, v in steps.items() if k not in _skippable}
+            incomplete = [k for k, v in active_steps.items() if v != "completed"]
+            checks["R3_all_completed"] = not incomplete if active_steps else "N/A"
+            checks["R3_incomplete_steps"] = ",".join(incomplete) if incomplete else ""
         else:
-            incomplete = [k for k, v in steps.items() if v != "completed"]
-            checks["R3_all_completed"] = not incomplete
-            if incomplete:
-                checks["R3_incomplete_steps"] = ",".join(incomplete)
+            # creative: 非 keyframes 模式下 end_frame 步骤可跳过
+            chaining_mode = sd.get("chaining_mode", "none")
+            _skippable = set()
+            if sc.type == "creative" and chaining_mode not in ("keyframes",):
+                _skippable = {"step_end_frame_prompts", "step_end_frame_generation"}
+            active_steps = {k: v for k, v in steps.items() if k not in _skippable}
+            incomplete = [k for k, v in active_steps.items() if v != "completed"]
+            checks["R3_all_completed"] = not incomplete if active_steps else "N/A"
+            checks["R3_incomplete_steps"] = ",".join(incomplete) if incomplete else ""
+
         fvf = sd.get("final_video_file", "")
         checks["R4_final_path_exists"] = bool(fvf and os.path.exists(fvf))
     else:
         checks["R1_task_state_valid"] = False
+        checks["R2_task_type"] = None
         checks["R2_task_type_matches"] = False
+        checks["R3_step_count"] = 0
         checks["R3_all_completed"] = False
+        checks["R3_incomplete_steps"] = "task_state.json missing"
         checks["R4_final_path_exists"] = False
 
-    # R7-R8: 音频/字幕文件
+    # ── R5: task.json（含 video_id） ──
+    # 创意任务在 scene_N/ 子目录，稿件任务在 para_N/ 子目录
+    # 简单视频任务在根目录，数字人在 clip/ 子目录
+    _task_json_found = False
+    _has_video_id = False
+
+    tj_root = os.path.join(task_dir, "task.json")
+    if os.path.exists(tj_root):
+        _task_json_found = True
+        try:
+            with open(tj_root) as f:
+                tjd = json.load(f)
+            _has_video_id = bool(tjd.get("video_id") or tjd.get("id"))
+        except Exception:
+            pass
+
+    # 检查子目录
+    if sc.type in ("creative", "manuscript", "anchor"):
+        subdir_prefix = {
+            "creative": "scene_", "manuscript": "para_", "anchor": "clip"
+        }.get(sc.type)
+        subdir_is_exact = sc.type == "anchor"
+        for entry in os.listdir(task_dir):
+            match = entry == subdir_prefix if subdir_is_exact else entry.startswith(subdir_prefix)
+            if match:
+                sd_path = os.path.join(task_dir, entry)
+                if os.path.isdir(sd_path):
+                    tj_sub = os.path.join(sd_path, "task.json")
+                    if os.path.exists(tj_sub):
+                        _task_json_found = True
+                        if not _has_video_id:
+                            try:
+                                with open(tj_sub) as f:
+                                    tjd = json.load(f)
+                                _has_video_id = bool(tjd.get("video_id") or tjd.get("id"))
+                            except Exception:
+                                pass
+
+    checks["R5_task_json"] = _task_json_found
+    checks["R5_has_video_id"] = _has_video_id
+
+    # ── R6: curl.sh（含 video_id） ──
+    _curl_dirs_checked = 0
+    _curl_dirs_with_valid_id = 0
+
+    cs_root = os.path.join(task_dir, "curl.sh")
+    if os.path.exists(cs_root):
+        _curl_dirs_checked += 1
+        if _curl_has_valid_video_id(cs_root):
+            _curl_dirs_with_valid_id += 1
+
+    if sc.type in ("creative", "manuscript", "anchor"):
+        subdir_prefix = {
+            "creative": "scene_", "manuscript": "para_", "anchor": "clip"
+        }.get(sc.type)
+        subdir_is_exact = sc.type == "anchor"
+        for entry in os.listdir(task_dir):
+            match = entry == subdir_prefix if subdir_is_exact else entry.startswith(subdir_prefix)
+            if match:
+                sd_path = os.path.join(task_dir, entry)
+                if os.path.isdir(sd_path):
+                    cs_sub = os.path.join(sd_path, "curl.sh")
+                    if os.path.exists(cs_sub):
+                        _curl_dirs_checked += 1
+                        if _curl_has_valid_video_id(cs_sub):
+                            _curl_dirs_with_valid_id += 1
+
+    checks["R6_curl_sh"] = _curl_dirs_checked > 0
+    checks["R6_has_video_id_in_curl"] = _curl_dirs_with_valid_id > 0
+    checks["R6_dirs_checked"] = _curl_dirs_checked
+    checks["R6_dirs_with_curl"] = _curl_dirs_with_valid_id
+
+    # ── R7-R8: 子目录 + 音频/字幕文件 ──
     audio_enabled = sc.params.get("audio_enabled", True)
-    if sc.type in ("creative", "manuscript", "anchor") and audio_enabled:
-        audio_found = srt_found = False
-        for root, _dirs, files in os.walk(task_dir):
-            for fn in files:
-                if fn in ("narration.mp3", "full_narration.mp3", "narration.wav",
-                          "combined_narration.mp3"):
-                    audio_found = True
-                if fn.endswith(".srt"):
-                    srt_found = True
-        checks["R7_audio_files"] = audio_found
-        checks["R8_subtitle_srt"] = srt_found
+    if sc.type in ("creative", "manuscript", "anchor"):
+        # R7: 子目录存在性
+        if sc.type == "anchor":
+            dirs_exist = os.path.isdir(os.path.join(task_dir, "clip"))
+        else:
+            prefix = "scene_" if sc.type == "creative" else "para_"
+            dirs_exist = any(
+                e.startswith(prefix) and os.path.isdir(os.path.join(task_dir, e))
+                for e in os.listdir(task_dir)
+            )
+        checks["R7_sub_dirs_exist"] = dirs_exist
+
+        if audio_enabled:
+            audio_found = srt_found = False
+            for root, _dirs, files in os.walk(task_dir):
+                for fn in files:
+                    if fn in ("narration.mp3", "full_narration.mp3",
+                              "narration.wav", "combined_narration.mp3"):
+                        audio_found = True
+                    if fn.endswith(".srt"):
+                        srt_found = True
+            checks["R7_audio_files"] = audio_found
+            checks["R8_subtitle_srt"] = srt_found
+        else:
+            checks["R7_audio_files"] = "N/A"
+            checks["R8_subtitle_srt"] = "N/A"
     else:
+        checks["R7_sub_dirs_exist"] = "N/A"
         checks["R7_audio_files"] = "N/A"
         checks["R8_subtitle_srt"] = "N/A"
+
+    # ── R9-R10: 合稿产物（稿件/数字人后拼接音频） ──
+    has_combined = sc.type in ("manuscript", "anchor")
+    if has_combined and audio_enabled:
+        fn9 = os.path.join(task_dir, "full_narration.mp3")
+        checks["R9_full_narration"] = os.path.exists(fn9) and os.path.getsize(fn9) > 0
+        fn10 = os.path.join(task_dir, "full_subtitle.srt")
+        checks["R10_full_subtitle"] = os.path.exists(fn10)
+        if os.path.exists(fn10):
+            with open(fn10) as f:
+                srt_content = f.read()
+            checks["R10_srt_entries"] = (
+                srt_content.count("\n\n") + 1 if "\n\n" in srt_content else 1
+            )
+        else:
+            checks["R10_srt_entries"] = 0
+    elif has_combined:
+        checks["R9_full_narration"] = "N/A"
+        checks["R10_full_subtitle"] = "N/A"
+        checks["R10_srt_entries"] = "N/A"
+    else:
+        checks["R9_full_narration"] = "N/A"
+        checks["R10_full_subtitle"] = "N/A"
+        checks["R10_srt_entries"] = "N/A"
 
     return checks
 
@@ -520,7 +697,11 @@ def run_scenario(sc: ScenarioDef, poll_interval: int = POLL_INTERVAL,
                 if v is False and not any(
                     k.endswith(x) for x in
                     ("_width", "_height", "_duration", "_count",
-                     "_entries", "F2_duration"))
+                     "_entries", "F2_duration", "F6_asr_text",
+                     "F4_speech_duration", "R3_incomplete_steps",
+                     "R6_dirs_checked", "R6_dirs_with_curl",
+                     "R10_srt_entries", "F7_expected_duration")
+                )
             ]
             result["errors"] = failed_checks
 
